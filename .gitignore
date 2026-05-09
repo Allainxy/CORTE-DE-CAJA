@@ -1,0 +1,48 @@
+# Dependencias Node
+node_modules/
+backend/node_modules/
+
+# Base de datos local (¡no subir!)
+backend/*.db
+backend/*.db-journal
+backend/*.db-wal
+backend/*.db-shm
+
+# Variables de entorno
+.env
+backend/.env
+*.env.local
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build / cache
+dist/
+build/
+.cache/
+.parcel-cache/
+
+# PWA cache local
+sw-cache/
+
+# Backups
+backups/
+*.bak
+
+# Deploy / certificados (generados en el servidor, NO en GitHub)
+certbot/
+public/

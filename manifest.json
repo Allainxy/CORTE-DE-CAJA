@@ -1,0 +1,14 @@
+{
+  "name": "K-BOTANAS · Control de Caja",
+  "short_name": "K-Caja",
+  "description": "Control de gastos e ingresos en efectivo para K-BOTANAS",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#FFF8F0",
+  "theme_color": "#E63946",
+  "icons": [
+    { "src": "logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "logo.png", "sizes": "192x192", "type": "image/png", "purpose": "any" }
+  ]
+}

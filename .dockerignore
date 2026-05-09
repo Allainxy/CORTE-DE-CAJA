@@ -1,0 +1,16 @@
+node_modules
+backend/node_modules
+backend/*.db
+backend/*.db-journal
+backend/*.db-wal
+backend/*.db-shm
+.env
+*.env.local
+.git
+.github
+.vscode
+.idea
+*.log
+DEPLOY.md
+README.md
+LICENSE
