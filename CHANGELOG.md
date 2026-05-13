@@ -1,0 +1,381 @@
+# Changelog · K-BOTANAS Control de Caja
+
+Todos los cambios relevantes del sistema quedan documentados aquí.
+
+Formato basado en [Keep a Changelog](https://keepachangelog.com/es/1.1.0/) con secciones de **resumen ejecutivo** y **detalle técnico** por release.
+
+El proyecto sigue [versionado semántico](https://semver.org/lang/es/) — `MAYOR.MENOR.PARCHE`:
+- **MAYOR**: cambios que rompen compatibilidad
+- **MENOR**: features nuevas compatibles hacia atrás
+- **PARCHE**: solo correcciones de bugs
+
+---
+
+## [1.15.1] — 2026-05-12
+
+### 📌 Resumen ejecutivo
+
+Visibilidad extendida en **Corte del día**: la tabla ahora muestra al final los totales de **DETALLE / MAYOREO / DULCERÍA / MAQUILA** del mismo día y un **GRAN TOTAL** que suma rutas + ventas adicionales.
+
+**Para qué sirve:** antes solo se veían los totales por ruta. Ahora se ve en una sola pantalla cuánto entró TODO el día (efectivo, transferencia, total facturado), sin importar el canal de venta.
+
+### ✨ Added
+
+#### Módulo Ventas — Totales Adicionales por Canal (F5)
+
+- **Nuevo endpoint** `GET /api/ventas/totales-dia?fecha=YYYY-MM-DD`
+  - Devuelve totales agrupados por canal (DETALLE/MAYOREO/DULCERIA/MAQUILA)
+  - Cada canal con: `count`, `venta_sistema`, `efectivo`, `transferencia`
+  - Incluye `gran_total` consolidado de los 4 canales
+  - Método de pago se determina por `movs.metodo` (vinculado a la venta vía `ventas.mov_id`):
+    - Caja tipo EFECTIVO → contabiliza como efectivo
+    - Caja tipo BANCO/TARJETA → contabiliza como transferencia
+    - Sin `mov_id` (raro): asume EFECTIVO por defecto
+  - Solo cuenta ventas con `deleted=0` (respeta soft-delete + cascade de B2)
+
+- **UI extendida en `DetalleExcelPanel`** (ventas-view.jsx):
+  - Tras el `<tfoot>` con TOTALES por ruta, se renderizan 6 filas nuevas:
+    - 1 banner amarillo: `💵 VENTAS ADICIONALES DEL DÍA — informativo, no editable`
+    - 4 filas (una por canal): `+ DETALLE · N ventas`, `+ MAYOREO · N ventas`, etc.
+    - 1 fila verde fuerte: `🟢 GRAN TOTAL DEL DÍA (rutas + ventas adicionales)`
+  - Las filas son no-editables (fondo amarillo claro, texto itálico)
+  - Auto-refresh cuando se guarda/elimina cualquier fila del corte
+
+### 🐛 Fixed
+
+#### Bug F5.1 — Orden de rutas en Express
+
+**Síntoma:** el endpoint `GET /api/ventas/totales-dia` retornaba 404 incluso después de desplegarse correctamente.
+
+**Causa raíz:** Express resuelve rutas en orden de registro. El patcher F5 insertó `GET /api/ventas/totales-dia` en línea 3221, pero ya existía `GET /api/ventas/:id` en línea 3207. La ruta `:id` con su parámetro catch-all matcheaba primero la URL `/api/ventas/totales-dia` (interpretando `id='totales-dia'`), retornaba `{ error: 'no existe' }` con 404, y nunca llegaba al endpoint específico.
+
+**Fix:** mover el bloque del endpoint a una posición ANTES de `GET /api/ventas/:id` en server.js. El marker `F5_ROUTE_ORDER_FIXED` deja constancia del cambio.
+
+**Lección general:** en Express, **siempre registrar rutas específicas antes que rutas con parámetros**. Patrón aplicable a futuros endpoints:
+
+```js
+// CORRECTO
+app.get('/api/ventas/totales-dia', ...);  // específica primero
+app.get('/api/ventas/:id', ...);           // catch-all después
+
+// INCORRECTO (causa este bug)
+app.get('/api/ventas/:id', ...);          // catch-all atrapa todo
+app.get('/api/ventas/totales-dia', ...);  // nunca se llega aquí
+```
+
+### ⚠️ Notas operacionales (incidente del 12 may 2026 ~22:00)
+
+Durante el despliegue de F5 se identificó un riesgo de configuración pm2 que es importante documentar:
+
+**Lo que pasó:** al diagnosticar el bug F5.1, se intentó `pm2 delete corte-kbomx + pm2 start /opt/corte-kbomx/backend/server.js` desde un directorio temporal. Esto perdió las **variables de entorno** del proceso original (`PORT` y `DB_FILE`) y arrancó server.js con sus defaults internos, causando:
+
+- Server.js intentó escuchar en su puerto default 3001 (en lugar del esperado 3401 que nginx redirige)
+- Conflicto con otro proceso ya en 3001 → `EADDRINUSE`
+- Algunas variantes intentaron conectar a la BD en path relativo (sin `DB_FILE`) → `no such table: cats` porque no encontraban `kbotanas.db`
+- Resultado: caída completa de `corte.kbomx.com` por ~30 min mientras se diagnosticaba
+
+**Configuración correcta** (para iniciar/reiniciar pm2 después de un reboot del VPS o crash):
+
+```bash
+pm2 delete corte-kbomx 2>/dev/null
+
+cd /opt/corte-kbomx/backend && \
+PORT=3401 \
+DB_FILE=/opt/corte-kbomx/data/kbotanas.db \
+NODE_ENV=production \
+  pm2 start server.js \
+    --name corte-kbomx \
+    --cwd /opt/corte-kbomx/backend
+
+pm2 save   # ← CRÍTICO: guarda env vars + cwd para que persistan entre reboots
+```
+
+**Puntos clave:**
+- Puerto **3401** es el que nginx redirige (`location /api/ → proxy_pass http://127.0.0.1:3401`)
+- Puerto **3000** está ocupado por Docker (`kbotanas-backend`, sistema diferente — NO tocar)
+- Puerto **3001** queda con otros procesos pm2
+- `DB_FILE` apunta a `/opt/corte-kbomx/data/kbotanas.db` (path absoluto)
+- `pm2 save` es OBLIGATORIO para que las env vars sobrevivan a reinicios
+
+**Para futuro:** se recomienda crear un `ecosystem.config.js` que documente estas variables formalmente y elimine el riesgo de errores manuales. Quedó como mejora pendiente.
+
+### 📡 Endpoints nuevos
+
+```
+GET /api/ventas/totales-dia?fecha=YYYY-MM-DD
+  → { fecha, por_canal: [{ canal, count, venta_sistema, efectivo, transferencia }], gran_total: {...} }
+```
+
+### 🛡️ Verificación
+
+- ✅ SQL validado con tests funcionales en sql.js (5 escenarios: ventas activas, deleted, otras fechas, sin mov_id, agrupación por canal)
+- ✅ `node --check` server.js OK
+- ✅ Babel parser ventas-view.jsx OK
+- ✅ Idempotente (markers: `F5_TOTALES_DIA`, `F5_ROUTE_ORDER_FIXED`, `F5_FRONTEND`)
+- ✅ Compatibilidad: requiere F4 + F4.1 previamente desplegados
+- ✅ Verificado visualmente en producción (banner + 4 canales + GRAN TOTAL aparecen correctamente)
+
+---
+
+## [1.15.0] — 2026-05-12
+
+### 📌 Resumen ejecutivo
+
+Release grande con foco en **módulo Nómina**, **órdenes de compra** y **control de cierres**.
+
+**Lo que cambia para el usuario:**
+
+- 🆕 **Nómina puede pagarse uno por uno** — ya no es necesario "Cerrar y pagar" a todos a la vez. Cada empleado tiene su botón 💰 individual. Las filas pagadas se ponen verdes (✅). Práctico para días donde unos cobran viernes y otros sábado.
+- 🆕 **Cierre de día en Captura por Vendedor** — botón "🔒 Cerrar día" bloquea todos los inputs del día hasta que admin/gerente reabra con PIN. Evita cambios accidentales en cortes ya validados.
+- 🆕 **Comisiones Mensuales** — nuevo tab en Nómina para captura mensual de bonos/comisiones de vendedores ruta. Al cerrar el mes genera un GASTO automático.
+- 🆕 **Sync empleados a periodo abierto** — botón 🔄 que agrega empleados activos faltantes al periodo de nómina vigente.
+- 🆕 **Comisionistas mayoreo 5%** — nueva columna en ventas + dropdown UI para asignar comisionistas a ventas MAYOREO sin escalonar.
+- 🆕 **Cross-feed Mayoreo→Detalle** — las ventas MAYOREO/DULCERIA/MAQUILA aparecen como filas virtuales no-editables al final del corte detalle, con breakdown de comisiones para comisionistas (5%).
+- 🆕 **Exports Excel + PDF de nómina** con formato exacto: 14 columnas, zebra amarillo, columna GARANTÍA azul, subtotales rojos por ruta, TOTAL GENERAL negro, header K-BOTANAS rojo con banda amarilla.
+- 🆕 **TOTAL por fila en Órdenes de Compra** — el modal de "Nueva Orden de Compra" ahora muestra `cant × precio` en cada fila (vacío si cant=0). Ya no hay que calcular mental.
+- 🐛 **Fix B2** — eliminar un movimiento desde el módulo Movimientos ahora cascadea correctamente a la venta vinculada. Antes se quedaban ventas huérfanas (`deleted=0` pero su mov `deleted=1`) que seguían apareciendo en TOTALES y Reportes.
+- 🐛 **Print de PDF de órdenes** — ahora cada orden ocupa su propia página. Antes los encabezados de varias órdenes se traslapaban al imprimir/exportar.
+- 🐛 **PDF de nómina** — abrevia rutas largas (`ADMINISTRACION` → `ADMIN`, `ENVASADO` → `ENVS`, etc.) para evitar cortes feos en el header.
+
+**Lo que cambia para devs/admins:**
+- Nueva tabla `nominas_periodos`, `nominas_pagos` (más campos), `comisiones_mensuales_periodos`, `comisiones_mensuales_pagos`
+- 3 nuevos módulos backend: `nomina-extensions.js`, `nomina-pagos-individuales.js`, `ventas-cierres-dia.js`
+- Helpers de exports: `nomina-exports-excel.js`, `nomina-exports-pdf.js`
+- Tabla `ventas_cierres_dia` (ya existía en schema, ahora implementada)
+- Columna `ventas.comisionista_empleado_id` (TEXT, FK opcional)
+- Columnas `nominas_pagos.pagado` / `pagado_at` / `pagado_por`
+- `DELETE /api/movs/:id` ahora cascadea a `ventas` y `ventas_detalle_cortes` (6 columnas mov_*_id)
+- 19 endpoints nuevos relacionados con nómina, comisiones mensuales y cierres de día
+
+---
+
+### ✨ Added (nuevo)
+
+#### Módulo Nómina
+
+- **Pagos individuales** (`F1`)
+  - Schema: `nominas_pagos.pagado INTEGER DEFAULT 0`, `pagado_at INTEGER`, `pagado_por TEXT`
+  - Endpoints: `POST /api/nomina/pagos/:id/pagar`, `POST .../desmarcar-pagado`
+  - UI: botón 💰 (naranja, pendiente) / ✅ (verde, pagado) en cada fila
+  - Estilo visual: fila verde claro cuando `pagado=1`, botón 🗑 deshabilitado para pagos marcados
+  - Cierre global respeta los ya pagados (no re-paga, suma al total final)
+  - Cascade automático de abonos a préstamos al pagar (no se revierten al desmarcar — warning explícito)
+
+- **Comisiones Mensuales** (`T4`)
+  - Sub-tab "📅 Comisiones Mensuales" en NominaView
+  - Solo aplica a empleados con `tipo=VENDEDOR` y `departamento=VENTAS`
+  - Tablas: `comisiones_mensuales_periodos`, `comisiones_mensuales_pagos`
+  - Endpoints: `GET /api/comisiones-mensuales/periodos`, `POST .../periodos`, `GET .../periodos/:id`, `PATCH .../pagos/:id`, `POST .../periodos/:id/cerrar`
+  - Captura manual de % aplicado, bono base, comisiones manuales, observaciones por vendedor
+  - Al cerrar genera mov GASTO automático en la caja seleccionada
+
+- **Cross-feed Mayoreo → Detalle** (`T1`)
+  - Las ventas MAYOREO/DULCERIA/MAQUILA aparecen como filas virtuales al final del corte detalle
+  - No editables, decoración visual (gris itálica)
+  - Breakdown automático de comisión 5% si tienen `comisionista_empleado_id` asignado
+  - NO suman a la comisión escalonada del vendedor
+
+- **Comisionistas mayoreo 5%** (`T3`)
+  - Nueva columna `ventas.comisionista_empleado_id TEXT` (FK opcional a empleados)
+  - Dropdown UI en ventas mayoreo para asignar
+  - Cálculo de comisión 5% sin escalonar (no usa la tabla de % por monto)
+
+- **Sync empleados a periodo abierto** (`T2`)
+  - Botón 🔄 "Sync empleados" en NominaView (solo periodo ABIERTO)
+  - Endpoint: `POST /api/nomina/periodos/:id/sync-empleados`
+  - Agrega filas de pago para empleados activos que faltaban (no toca los existentes)
+
+- **Exports Excel + PDF formato K-BOTANAS** (`T5`)
+  - Endpoint: `GET /api/nomina/periodos/:id/export.xlsx`
+  - Endpoint: `GET /api/nomina/periodos/:id/export.pdf`
+  - 14 columnas: RUTA, VENDEDOR, RANKING, FALTAS, VENTAS, COMISIÓN %, COMISIÓN TOTAL, SUELDO BASE, META, RANKING, DESC, TOTAL, GARANTÍA, FIRMA
+  - Excel: zebra `#FFF2CC` (amarillo), GARANTÍA azul cielo `#5DADE2`, subtotales por ruta en rojo, TOTAL GENERAL en negro
+  - PDF: LETTER landscape, header K-BOTANAS rojo con banda amarilla, mismo esquema de colores
+  - Abreviaciones de departamentos (`ADMINISTRACION`→`ADMIN`, `ENVASADO`→`ENVS`, etc.) para evitar cortes
+
+#### Módulo Ventas
+
+- **Cierre de día con PIN** (`F4`)
+  - Botón "🔒 Cerrar día" en tab "📅 Corte del día"
+  - Tabla `ventas_cierres_dia` (estaba en schema, ahora implementada)
+  - Endpoints: `GET /api/ventas/cierres-dia?fecha=YYYY-MM-DD`, `POST .../cerrar`, `POST .../reabrir`
+  - Requiere admin/gerente + PIN (reusa middleware `requirePin`)
+  - Cierre congela los inputs de la tabla + botón "+ Fila manual" + DELETE de filas
+  - Banner rojo cuando cerrado: "🔒 DÍA CERRADO · por X · fecha · comentario"
+  - Reapertura requiere motivo obligatorio (auditado)
+  - Defensa en profundidad: `POST/DELETE /api/ventas/cortes/detalle*` rechazan con `423 Locked` si día cerrado
+
+#### Módulo Compras
+
+- **Columna TOTAL por fila** (`F2`)
+  - En modal "Nueva Orden de Compra" / "Editar Orden"
+  - Posición: entre CATEGORÍA y ✕
+  - Muestra `fmtMXN(cant × precio)` en negrita monoespaciada
+  - Vacío cuando `cant = 0` (consistente con `opacity:0.55` de filas sin cantidad)
+
+### 🐛 Fixed (corregido)
+
+#### Bug B2 — Ventas/Cortes huérfanos al eliminar movimientos
+
+**Síntoma:** una venta MAYOREO de $3,000 seguía apareciendo en TOTALES (semana/mes/año) y en Reportes después de "eliminarla". El movimiento sí se borraba pero la venta no.
+
+**Causa raíz:** `DELETE /api/movs/:id` no cascadeaba a las tablas que referencian `mov_id`. El usuario había eliminado el movimiento directamente desde el módulo Movimientos (no la venta), dejándola huérfana (`deleted=0` aunque su mov estaba `deleted=1`). Los endpoints de TOTALES filtran `deleted=0`, así que la venta seguía sumando.
+
+**Fix:**
+- SQL one-off: limpia ventas huérfanas existentes (`UPDATE ventas SET deleted=1 WHERE ... INNER JOIN movs WHERE mov.deleted=1`)
+- SQL one-off: limpia cortes detalle huérfanos (considera las 6 columnas `mov_*_id` reales: `mov_efectivo_id`, `mov_transferencia_id`, `mov_credito_id`, `mov_gastos_id`, `mov_devoluciones_id`, `mov_gasolina_id`)
+- Backend: `DELETE /api/movs/:id` ahora ejecuta dentro de una transaction que:
+  1. Soft-deletea el mov
+  2. Busca ventas con `mov_id = ?` → cascade soft-delete
+  3. Busca cortes con cualquiera de sus 6 `mov_*_id` apuntando al mov:
+     - Si el corte tiene solo este mov → soft-delete del corte
+     - Si tiene otros movs vivos → solo limpia esa referencia (`SET mov_X_id = NULL`)
+  4. Audit log queda con `cascade-delete` o `cascade-clear-ref`
+
+**Verificación final:** prueba en producción confirmó audit entry `cascade-delete · ventas · v-1778619892257-1336 · cascadeo desde mov m-venta-1778619892257-7633 (MAYOREO · 100)`.
+
+#### Bug B1 — `comisionista_empleado_id` con tipo incorrecto
+
+**Síntoma:** los JOINs entre ventas y empleados a través de `comisionista_empleado_id` no matcheaban.
+
+**Causa:** la columna se creó como `INTEGER` pero `empleados.id` es `TEXT` (formato `emp-base-2`).
+
+**Fix:** migración SQL que crea columna nueva TEXT, copia valores con CAST, drop la vieja, rename.
+
+#### Bug B3 — Rutas largas cortadas en PDF de nómina
+
+**Síntoma:** `ADMINISTRACION` aparecía como `ADMINIS-TRACIO`, `ENVASADO` como `ENVASA-DO`.
+
+**Fix:** mapa de abreviaciones de departamentos (`ADMIN`, `ALMA`, `DULC`, `ENVS`, `GOMI`, `CACA`, `CHOC`, `PROD`, `MAQ`, `VTAS`). Códigos `R-XX` de vendedores se mantienen intactos.
+
+#### Bug F3 — Print/PDF de órdenes de compra con traslape
+
+**Síntoma:** al exportar PDF de varias órdenes de compra, los encabezados de diferentes órdenes se traslapaban visualmente en lugar de quedar en páginas separadas.
+
+**Causa raíz:** el CSS `@media print` original tenía 3 problemas combinados:
+1. `body * { visibility: hidden }` oculta pero NO remueve del flujo
+2. `position: absolute` en `#pdf-content` rompe `page-break-after` (spec CSS)
+3. Falta `page-break-inside: avoid` permitía partir órdenes a la mitad
+
+**Fix definitivo (F3.2):** la función `imprimir()` mueve `#pdf-content` al body directamente antes de `window.print()` (con clase `kbomx-print-active`), y lo restaura con `afterprint` event. CSS simple: `body.kbomx-print-active > *:not(#pdf-content) { display: none }`.
+
+#### Bug F4.1 — Banner de cierre no se actualizaba después del POST
+
+**Síntoma:** tras cerrar el día con éxito, el botón seguía diciendo "🔒 Cerrar día" en lugar de cambiar a "🔓 Reabrir día". Usuario terminaba pulsándolo varias veces.
+
+**Causa:** el handler hacía `await cargarCierre()` después del POST exitoso. Si ese GET fallaba, el `catch` silencioso (`{ /* silencioso */ }`) dejaba `cierreInfo` con `cerrado: false`.
+
+**Fix:** usar la respuesta directa del POST (que ya trae el objeto `cierre`) para actualizar el estado inmediatamente. `cargarCierre()` pasa a background con `console.error` visible.
+
+#### Bugs varios (proceso de descubrimiento durante el desarrollo)
+
+Durante la implementación del módulo nómina (FIX 001-006 → consolidados en v1.15.0) se descubrieron y corrigieron los siguientes problemas del schema/auth:
+
+- `cats.grupo` no existe → es `tipo` (INGRESO/GASTO)
+- `cats.activo` no existe → es `deleted` (inverso)
+- IDs son TEXT no INTEGER → `parseInt(req.params.id)` rompía endpoints nómina
+- better-sqlite3 es síncrono — se creó wrapper de detección
+- Tabla mayoreo no se llama `ventas_mayoreo` sino `ventas` con `canal='MAYOREO'`
+- `movs.categoria` guarda NOMBRE (no ID) — INSERT INTO movs requiere lookup
+- Estado en MAYÚSCULAS `'ABIERTO'` no `'abierto'`
+- `window.apiFetch` NO existe globalmente — el patrón canónico es `window.KBotAPI.token()`
+- `function showToast` con hoisting se vuelve `window.showToast` → recursión infinita (fix: renombrar a `_cmtToast`)
+
+### 🔧 Changed (modificado)
+
+- `DELETE /api/movs/:id` ahora opera dentro de transaction con cascade (`CASCADE_MOV_V2`)
+- `POST /api/nomina/periodos/:id/cerrar` ahora respeta `pagado=1` (skip pagos ya pagados individualmente, suma sus totales al total del periodo)
+- `POST /api/ventas/cortes/detalle` y `DELETE .../detalle/:id` rechazan con `423 Locked` si el día está cerrado
+- PDF de nómina: `mapPagoToRow` usa nueva función `rutaCorta()` que aplica abreviaciones
+
+### 🗄️ Schema cambios
+
+```sql
+-- B1: tipo de columna
+ALTER TABLE ventas ADD COLUMN comisionista_empleado_id TEXT;  -- (era INTEGER)
+
+-- F1: tracking de pagos individuales
+ALTER TABLE nominas_pagos ADD COLUMN pagado INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE nominas_pagos ADD COLUMN pagado_at INTEGER;
+ALTER TABLE nominas_pagos ADD COLUMN pagado_por TEXT;
+
+-- F4: tabla ya existía en schema, ahora se usa
+-- ventas_cierres_dia (no requirió migración)
+
+-- T4: comisiones mensuales (nuevas)
+CREATE TABLE comisiones_mensuales_periodos (...);
+CREATE TABLE comisiones_mensuales_pagos (...);
+```
+
+### 📡 Endpoints nuevos
+
+```
+Nómina (módulo nomina-extensions.js):
+  POST /api/nomina/periodos/:id/sync-empleados
+  POST /api/nomina/periodos/:id/recalcular
+  GET  /api/nomina/periodos/:id/export.xlsx
+  GET  /api/nomina/periodos/:id/export.pdf
+  ... (más, total 10 endpoints T2 + T3 + T4 + T5)
+
+Pagos individuales (módulo nomina-pagos-individuales.js):
+  POST /api/nomina/pagos/:id/pagar
+  POST /api/nomina/pagos/:id/desmarcar-pagado
+
+Comisiones Mensuales (parte de nomina-extensions.js):
+  GET  /api/comisiones-mensuales/periodos
+  POST /api/comisiones-mensuales/periodos
+  GET  /api/comisiones-mensuales/periodos/:id
+  PATCH /api/comisiones-mensuales/pagos/:id
+  POST /api/comisiones-mensuales/periodos/:id/cerrar
+
+Cierres de día (módulo ventas-cierres-dia.js):
+  GET  /api/ventas/cierres-dia?fecha=YYYY-MM-DD
+  POST /api/ventas/cierres-dia/cerrar
+  POST /api/ventas/cierres-dia/reabrir
+```
+
+### 📦 Archivos nuevos en backend
+
+- `/opt/corte-kbomx/backend/nomina-extensions.js`
+- `/opt/corte-kbomx/backend/nomina-exports-excel.js`
+- `/opt/corte-kbomx/backend/nomina-exports-pdf.js`
+- `/opt/corte-kbomx/backend/nomina-pagos-individuales.js`
+- `/opt/corte-kbomx/backend/ventas-cierres-dia.js`
+
+### 📦 Archivos nuevos en frontend
+
+- `/var/www/corte.kbomx.com/comisiones-mensuales-tab.jsx`
+
+### 🚀 Despliegues parciales (cronología del 2026-05-12)
+
+Esta release v1.15.0 consolida todo lo desplegado durante el día 12 de mayo. La cronología real de releases incrementales fue:
+
+1. **04:47** — Inicio sesión 1 · Plan de 5 tareas T1-T5
+2. **07:12** — Sesión 2 · `mejoras-nomina-v1.zip` + `ventas-crossfeed-v1.zip` (T1-T5 implementadas)
+3. **07:12-09:00** — 6 hotfixes incrementales (FIX-001 a FIX-006) descubriendo el schema real
+4. **09:00** — Auditoría holística → `mejoras-nomina-v2.zip` (consolidación + B1 + B3 + B5)
+5. **14:00** — `mejoras-nomina-v2.1-fix-b2.zip` (cascade ventas)
+6. **15:00** — `f1-pagos-individuales.zip`
+7. **16:00** — `f2-compras-total-fila.zip`
+8. **16:30** — `f3-print-pdf-fix.zip` → `f3.1-print-fix.zip` → **`f3.2-print-fix.zip`** (versión final)
+9. **17:00** — `f4-cierre-dia-ventas.zip` → **`f4.1-hotfix.zip`** (versión final)
+10. **20:00** — `mejoras-nomina-v2.2-fix-cortes.zip` → **`mejoras-nomina-v2.2-consolidated.zip`** (versión final que cerró B2)
+
+### 🛡️ Verificación post-deploy
+
+- ✅ Babel parser confirma JSX válido en todos los archivos modificados
+- ✅ `node --check` confirma JS válido en backend
+- ✅ Idempotencia de todos los patches (markers + backups timestamped)
+- ✅ Auto-rollback automático si el backend falla parse post-patch
+- ✅ Bug B2 verificado en producción: audit entry `cascade-delete · ventas · v-1778619892257-1336 · cascadeo desde mov m-venta-1778619892257-7633 (MAYOREO · 100) · 21:06:22`
+
+---
+
+## [1.14.2] — versión base previa al 2026-05-12
+
+Estado del sistema antes del trabajo del 12 de mayo. No documentado en este formato — referirse a `git log` o backups previos a `/opt/corte-kbomx/backups/v2-20260512-072448/` si se requieren detalles.
+
+---
+
+[1.15.0]: https://corte.kbomx.com/changelog#1.15.0
+[1.14.2]: https://corte.kbomx.com/changelog#1.14.2

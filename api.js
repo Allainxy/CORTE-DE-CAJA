@@ -86,6 +86,26 @@ window.KBotAPI = (function () {
     queueAdd({ method: 'DELETE', path: '/api/cats/' + id });
     flushQueue();
   }
+  async function syncGroup(grp) {
+    queueAdd({ method: 'POST', path: '/api/groups', body: grp });
+    flushQueue();
+  }
+  async function deleteGroup(id) {
+    queueAdd({ method: 'DELETE', path: '/api/groups/' + id });
+    flushQueue();
+  }
+  async function updateGroup(grp) {
+    queueAdd({ method: 'PUT', path: '/api/groups/' + grp.id, body: grp });
+    flushQueue();
+  }
+  async function reorderGroups(items) {
+    queueAdd({ method: 'POST', path: '/api/groups/reorder', body: { items } });
+    flushQueue();
+  }
+  async function updateCat(cat) {
+    queueAdd({ method: 'PUT', path: '/api/cats/' + cat.id, body: cat });
+    flushQueue();
+  }
   async function syncBudget(id, monto) {
     queueAdd({ method: 'POST', path: '/api/budgets', body: { id, monto } });
     flushQueue();
@@ -99,7 +119,7 @@ window.KBotAPI = (function () {
 
   return {
     enabled, token, user, login, logout,
-    pull, syncMov, deleteMov, syncCat, deleteCat, syncBudget, bulkMovs,
+    pull, syncMov, deleteMov, syncCat, deleteCat, updateCat, syncGroup, deleteGroup, updateGroup, reorderGroups, syncBudget, bulkMovs,
     flushQueue, queueGet
   };
 })();

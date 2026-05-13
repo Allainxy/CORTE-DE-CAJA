@@ -75,7 +75,7 @@ function NavIcon({ name }) {
   }
 }
 
-function Sidebar({ active, setActive, onAddClick }) {
+function Sidebar({ active, setActive, onAddClick, user, onLogout }) {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
@@ -102,6 +102,29 @@ function Sidebar({ active, setActive, onAddClick }) {
           <NavIcon name="plus" />
           <span>NUEVO MOVIMIENTO</span>
         </button>
+        {user && (
+          <div className="sidebar-user mono" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', marginTop: 8, fontSize: 12, opacity: 0.85 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }} />
+            <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {user.nombre}{user.rol === 'admin' ? ' · ADMIN' : ''}
+            </span>
+          </div>
+        )}
+        {onLogout && (
+          <button
+            className="nav-item"
+            onClick={() => { if (confirm('¿Cerrar sesión?')) onLogout(); }}
+            style={{ marginTop: 4, color: 'var(--primary)' }}
+            title="Cerrar sesión"
+          >
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            <span>CERRAR SESIÓN</span>
+          </button>
+        )}
         <div className="offline-tag">
           <span className="dot" />
           OFFLINE-READY · PWA

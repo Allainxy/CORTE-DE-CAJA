@@ -1,0 +1,22 @@
+{
+  "name": "kbotanas-backend",
+  "version": "1.5.0",
+  "description": "Backend API para K-BOTANAS Control de Caja",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "init": "node init-db.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.5",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "pdfkit": "^0.18.0",
+    "xlsx": "^0.18.5"
+  }
+}

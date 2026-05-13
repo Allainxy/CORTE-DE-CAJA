@@ -16,6 +16,7 @@ const ACCENTS = {
 function App() {
   const [movs, setMovs] = useState([]);
   const [cats, setCats] = useState([]);
+  const [groups, setGroups] = useState([]);
   const [budgets, setBudgets] = useState({});
   const [active, setActive] = useState('dashboard');
   const [captureOpen, setCaptureOpen] = useState(false);
@@ -33,6 +34,7 @@ function App() {
     (async () => {
       let m = await KBotDB.getAll('movs');
       let c = await KBotDB.getAll('cats');
+      let g = await KBotDB.getAll('groups');
       let b = await KBotDB.getAll('budgets');
       if (c.length === 0) {
         c = window.KBotSeed.CATS.slice();
@@ -44,7 +46,7 @@ function App() {
       }
       const bm = {};
       b.forEach(x => bm[x.id] = x.monto);
-      setMovs(m); setCats(c); setBudgets(bm);
+      setMovs(m); setCats(c); setGroups(g); setBudgets(bm);
 
       // Pull desde el servidor si hay backend
       if (KBotAPI.enabled() && KBotAPI.token()) {
@@ -61,13 +63,22 @@ function App() {
             }
             if (r.cats?.length) {
               const live = r.cats.filter(x => !x.deleted);
+              const dead = r.cats.filter(x => x.deleted).map(x => x.id);
               await KBotDB.bulkPut('cats', live);
+              for (const id of dead) await KBotDB.del('cats', id);
+            }
+            if (r.groups?.length) {
+              const live = r.groups.filter(x => !x.deleted);
+              const dead = r.groups.filter(x => x.deleted).map(x => x.id);
+              await KBotDB.bulkPut('groups', live);
+              for (const id of dead) await KBotDB.del('groups', id);
             }
             if (r.budgets?.length) {
               await KBotDB.bulkPut('budgets', r.budgets);
             }
             setMovs(await KBotDB.getAll('movs'));
             setCats(await KBotDB.getAll('cats'));
+            setGroups(await KBotDB.getAll('groups'));
             const bs = await KBotDB.getAll('budgets');
             const bm2 = {}; bs.forEach(x => bm2[x.id] = x.monto);
             setBudgets(bm2);
@@ -139,9 +150,89 @@ function App() {
   };
 
   const deleteCategory = async (id) => {
+    if (user?.rol !== 'admin') { alert('Solo el admin puede borrar categorías'); return; }
     await KBotDB.del('cats', id);
     setCats(prev => prev.filter(c => c.id !== id));
     if (KBotAPI.enabled() && KBotAPI.token()) KBotAPI.deleteCat(id);
+  };
+
+  const addGroup = async (g) => {
+    if (user?.rol !== 'admin') { alert('Solo el admin puede crear grupos'); return; }
+    await KBotDB.put('groups', g);
+    setGroups(prev => {
+      const map = new Map(prev.map(x => [x.id, x]));
+      map.set(g.id, g);
+      return Array.from(map.values());
+    });
+    if (KBotAPI.enabled() && KBotAPI.token()) KBotAPI.syncGroup(g);
+  };
+
+  const deleteGroup = async (id) => {
+    if (user?.rol !== 'admin') { alert('Solo el admin puede borrar grupos'); return; }
+    const inUse = cats.filter(c => c.group_id === id).length;
+    if (inUse > 0) { alert(`No se puede eliminar: ${inUse} categoría(s) lo usan. Reasígnalas primero.`); return; }
+    await KBotDB.del('groups', id);
+    setGroups(prev => prev.filter(g => g.id !== id));
+    if (KBotAPI.enabled() && KBotAPI.token()) KBotAPI.deleteGroup(id);
+  };
+
+  const updateGroup = async (g) => {
+    if (user?.rol !== 'admin') { alert('Solo el admin puede editar grupos'); return; }
+    const updated = { ...g, updated_at: Date.now() };
+    await KBotDB.put('groups', updated);
+    setGroups(prev => prev.map(x => x.id === g.id ? updated : x));
+    if (KBotAPI.enabled() && KBotAPI.token()) KBotAPI.updateGroup(updated);
+  };
+
+  // Reordenar: dir = -1 (subir) o +1 (bajar). Mueve dentro del mismo tipo.
+  const reorderGroup = async (id, dir) => {
+    if (user?.rol !== 'admin') { alert('Solo el admin puede reordenar grupos'); return; }
+    const grp = groups.find(g => g.id === id);
+    if (!grp) return;
+    const sameType = groups
+      .filter(g => g.tipo === grp.tipo && !g.deleted)
+      .sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0) || a.nombre.localeCompare(b.nombre));
+    const idx = sameType.findIndex(g => g.id === id);
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= sameType.length) return; // ya está en el extremo
+    // Swap
+    [sameType[idx], sameType[newIdx]] = [sameType[newIdx], sameType[idx]];
+    // Reasignar orden 0..N
+    const items = sameType.map((g, i) => ({ id: g.id, orden: i }));
+    const map = new Map(items.map(it => [it.id, it.orden]));
+    const now = Date.now();
+    const updatedAll = groups.map(g => map.has(g.id) ? { ...g, orden: map.get(g.id), updated_at: now } : g);
+    await KBotDB.bulkPut('groups', updatedAll.filter(g => map.has(g.id)));
+    setGroups(updatedAll);
+    if (KBotAPI.enabled() && KBotAPI.token()) KBotAPI.reorderGroups(items);
+  };
+
+  const updateCategory = async (c, opts = {}) => {
+    if (user?.rol !== 'admin') { alert('Solo el admin puede editar categorías'); return; }
+    const existing = cats.find(x => x.id === c.id);
+    if (!existing) return;
+    const updated = { ...existing, ...c, updated_at: Date.now() };
+    await KBotDB.put('cats', updated);
+    setCats(prev => prev.map(x => x.id === c.id ? updated : x));
+
+    // Cascada local: si renombró y aceptó actualizar movimientos
+    if (opts.cascadeRename && existing.nombre !== updated.nombre) {
+      const affectedMovs = movs.filter(m => m.tipo === existing.tipo && m.categoria === existing.nombre);
+      if (affectedMovs.length > 0) {
+        const renamed = affectedMovs.map(m => ({ ...m, categoria: updated.nombre, updated_at: Date.now() }));
+        await KBotDB.bulkPut('movs', renamed);
+        setMovs(prev => prev.map(m => {
+          if (m.tipo === existing.tipo && m.categoria === existing.nombre) {
+            return { ...m, categoria: updated.nombre, updated_at: Date.now() };
+          }
+          return m;
+        }));
+      }
+    }
+
+    if (KBotAPI.enabled() && KBotAPI.token()) {
+      KBotAPI.updateCat({ ...updated, cascadeRename: !!opts.cascadeRename });
+    }
   };
 
   const setBudget = async (id, monto) => {
@@ -171,13 +262,13 @@ function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar active={active} setActive={setActive} onAddClick={() => openCapture('INGRESO')} />
+      <Sidebar active={active} setActive={setActive} onAddClick={() => openCapture('INGRESO')} user={user} onLogout={handleLogout} />
       <main className="main-area">
         <TopBar installEvt={installEvt} onInstall={promptInstall} movsCount={movs.length} user={user} onLogout={handleLogout} syncing={syncing} />
         {active === 'dashboard' && <DashboardView movs={movs} cats={cats} setActive={setActive} openCapture={openCapture} />}
         {active === 'movs' && <MovsListView movs={movs} cats={cats} onEdit={editMov} onDelete={deleteMov} />}
         {active === 'reportes' && <ReportsView movs={movs} cats={cats} />}
-        {active === 'categorias' && <CategoriasView cats={cats} movs={movs} addCategory={addCategory} deleteCategory={deleteCategory} budgets={budgets} setBudget={setBudget} />}
+        {active === 'categorias' && <CategoriasView cats={cats} movs={movs} groups={groups} user={user} addCategory={addCategory} deleteCategory={deleteCategory} updateCategory={updateCategory} addGroup={addGroup} deleteGroup={deleteGroup} updateGroup={updateGroup} reorderGroup={reorderGroup} budgets={budgets} setBudget={setBudget} />}
         {active === 'xml' && <XMLView movs={movs} cats={cats} onImport={importMovs} />}
       </main>
       <BottomNav active={active} setActive={setActive} onAddClick={() => openCapture('INGRESO')} />
@@ -185,6 +276,7 @@ function App() {
         open={captureOpen}
         onClose={() => { setCaptureOpen(false); setEditing(null); }}
         cats={cats}
+        groups={groups}
         onSave={saveMov}
         initialTipo={captureTipo}
         editing={editing}

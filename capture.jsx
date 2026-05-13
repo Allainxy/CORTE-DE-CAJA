@@ -1,7 +1,8 @@
 // capture.jsx — Modal de captura rápida + detallada
-const CaptureModal = ({ open, onClose, cats, onSave, initialTipo = 'INGRESO', editing = null, addCategory }) => {
+const CaptureModal = ({ open, onClose, cats, groups = [], onSave, initialTipo = 'INGRESO', editing = null, addCategory }) => {
   const [mode, setMode] = useState('rapido'); // rapido | detallado
   const [tipo, setTipo] = useState(initialTipo);
+  const [grupoId, setGrupoId] = useState('');
   const [categoria, setCategoria] = useState('');
   const [concepto, setConcepto] = useState('');
   const [monto, setMonto] = useState('');
@@ -19,6 +20,9 @@ const CaptureModal = ({ open, onClose, cats, onSave, initialTipo = 'INGRESO', ed
       if (editing) {
         setTipo(editing.tipo);
         setCategoria(editing.categoria);
+        // Recuperar el grupo a partir de la categoría
+        const cat = cats.find(c => c.nombre === editing.categoria && c.tipo === editing.tipo);
+        setGrupoId(cat?.group_id || '');
         setConcepto(editing.concepto || '');
         setMonto(String(editing.monto));
         setFecha(editing.fecha);
@@ -29,6 +33,7 @@ const CaptureModal = ({ open, onClose, cats, onSave, initialTipo = 'INGRESO', ed
         setMode('detallado');
       } else {
         setTipo(initialTipo);
+        setGrupoId('');
         setCategoria('');
         setConcepto('');
         setMonto('');
@@ -42,7 +47,10 @@ const CaptureModal = ({ open, onClose, cats, onSave, initialTipo = 'INGRESO', ed
     }
   }, [open, initialTipo, editing]);
 
-  const filtered = cats.filter(c => c.tipo === tipo);
+  const groupsByTipo = groups
+    .filter(g => g.tipo === tipo && !g.deleted)
+    .sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0) || a.nombre.localeCompare(b.nombre));
+  const filtered = cats.filter(c => c.tipo === tipo && (!grupoId || c.group_id === grupoId));
 
   const handleSave = () => {
     if (!categoria) return alert('Elige una categoría');
@@ -61,12 +69,14 @@ const CaptureModal = ({ open, onClose, cats, onSave, initialTipo = 'INGRESO', ed
 
   const handleNewCat = () => {
     if (!newCatName.trim()) return;
+    if (!grupoId) { alert('Primero selecciona un GRUPO arriba'); return; }
     const c = {
       id: 'c-' + Date.now(),
       tipo,
       nombre: newCatName.trim().toUpperCase(),
       color: tipo === 'INGRESO' ? '#2EC27E' : '#FF6B35',
-      icon: newCatIcon || (tipo === 'INGRESO' ? '💵' : '📌')
+      icon: newCatIcon || (tipo === 'INGRESO' ? '💵' : '📌'),
+      group_id: grupoId
     };
     addCategory(c);
     setCategoria(c.nombre);
@@ -91,13 +101,13 @@ const CaptureModal = ({ open, onClose, cats, onSave, initialTipo = 'INGRESO', ed
         <div className="tipo-toggle">
           <button
             className={'tt-btn tt-ing ' + (tipo === 'INGRESO' ? 'active' : '')}
-            onClick={() => { setTipo('INGRESO'); setCategoria(''); }}
+            onClick={() => { setTipo('INGRESO'); setGrupoId(''); setCategoria(''); }}
           >
             <span className="tt-sign">+</span> INGRESO
           </button>
           <button
             className={'tt-btn tt-gas ' + (tipo === 'GASTO' ? 'active' : '')}
-            onClick={() => { setTipo('GASTO'); setCategoria(''); }}
+            onClick={() => { setTipo('GASTO'); setGrupoId(''); setCategoria(''); }}
           >
             <span className="tt-sign">−</span> GASTO
           </button>
@@ -136,25 +146,60 @@ const CaptureModal = ({ open, onClose, cats, onSave, initialTipo = 'INGRESO', ed
           </div>
         )}
 
-        {/* Categoría chips */}
+        {/* Grupo (jerarquía contable) */}
+        <div className="field">
+          <div className="field-label"><span>GRUPO</span></div>
+          {groupsByTipo.length === 0 ? (
+            <div style={{ padding: '10px 12px', background: 'var(--bg-2, #fff8f0)', border: '1px dashed var(--ink-soft, #ccc)', borderRadius: 8, fontSize: 13, opacity: 0.8 }}>
+              No hay grupos {tipo.toLowerCase()}s. Pídele al admin que los cree desde Categorías.
+            </div>
+          ) : (
+            <div className="cat-chips">
+              {groupsByTipo.map(g => (
+                <button
+                  key={g.id}
+                  className={'cat-chip ' + (grupoId === g.id ? 'active' : '')}
+                  onClick={() => { setGrupoId(g.id); setCategoria(''); }}
+                  style={grupoId === g.id ? { background: tipo === 'INGRESO' ? '#2EC27E' : '#FF6B35', borderColor: tipo === 'INGRESO' ? '#2EC27E' : '#FF6B35', color: '#fff' } : {}}
+                >
+                  <span>{tipo === 'INGRESO' ? '📂' : '📁'}</span>
+                  <span>{g.nombre}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Categoría chips (filtradas por grupo) */}
         <div className="field">
           <div className="field-label">
             <span>CATEGORÍA</span>
-            <button className="link-btn" onClick={() => setShowNewCat(true)}>+ Nueva</button>
+            {grupoId && <button className="link-btn" onClick={() => setShowNewCat(true)}>+ Nueva</button>}
           </div>
-          <div className="cat-chips">
-            {filtered.map(c => (
-              <button
-                key={c.id}
-                className={'cat-chip ' + (categoria === c.nombre ? 'active' : '')}
-                onClick={() => setCategoria(c.nombre)}
-                style={categoria === c.nombre ? { background: c.color, borderColor: c.color, color: '#fff' } : {}}
-              >
-                <span>{c.icon}</span>
-                <span>{c.nombre}</span>
-              </button>
-            ))}
-          </div>
+          {!grupoId ? (
+            <div style={{ padding: '10px 12px', fontSize: 13, opacity: 0.6 }}>
+              Selecciona un grupo arriba para ver/crear categorías.
+            </div>
+          ) : (
+            <div className="cat-chips">
+              {filtered.map(c => (
+                <button
+                  key={c.id}
+                  className={'cat-chip ' + (categoria === c.nombre ? 'active' : '')}
+                  onClick={() => setCategoria(c.nombre)}
+                  style={categoria === c.nombre ? { background: c.color, borderColor: c.color, color: '#fff' } : {}}
+                >
+                  <span>{c.icon}</span>
+                  <span>{c.nombre}</span>
+                </button>
+              ))}
+              {filtered.length === 0 && (
+                <div style={{ padding: '8px 0', fontSize: 13, opacity: 0.6 }}>
+                  No hay categorías en este grupo. Crea una con "+ Nueva".
+                </div>
+              )}
+            </div>
+          )}
           {showNewCat && (
             <div className="new-cat-row">
               <input

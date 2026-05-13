@@ -1,7 +1,7 @@
 // db.js — IndexedDB wrapper para K-BOTANAS
 window.KBotDB = (function () {
   const DB_NAME = 'kbotanas';
-  const DB_VER = 2;
+  const DB_VER = 3;
   let dbp = null;
 
   function open() {
@@ -18,6 +18,9 @@ window.KBotDB = (function () {
         }
         if (!db.objectStoreNames.contains('cats')) {
           db.createObjectStore('cats', { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains('groups')) {
+          db.createObjectStore('groups', { keyPath: 'id' });
         }
         if (!db.objectStoreNames.contains('budgets')) {
           db.createObjectStore('budgets', { keyPath: 'id' });
