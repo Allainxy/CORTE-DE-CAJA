@@ -258,6 +258,16 @@ const movsColsCxP = db.prepare("PRAGMA table_info(movs)").all().map(c => c.name)
 if (!movsColsCxP.includes('cxp_id')) {
   db.exec(`ALTER TABLE movs ADD COLUMN cxp_id TEXT`);
   console.log('🔧 Migración: columna cxp_id agregada a movs');
+
+// ─── Migración: created_at en movs (fix bug pago orden compra) ───
+const movsColsCreated = db.prepare("PRAGMA table_info(movs)").all().map(c => c.name);
+if (!movsColsCreated.includes('created_at')) {
+  db.exec(`ALTER TABLE movs ADD COLUMN created_at INTEGER`);
+  db.exec(`UPDATE movs SET created_at = updated_at WHERE created_at IS NULL`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_movs_created ON movs(created_at)`);
+  console.log('🔧 Migración: columna created_at agregada a movs');
+}
+
 }
 if (!movsColsCxP.includes('abono_id')) {
   db.exec(`ALTER TABLE movs ADD COLUMN abono_id TEXT`);
