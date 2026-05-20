@@ -5602,6 +5602,166 @@ app.delete('/api/nomina/prestamos/:id', auth, (req, res) => {
   catch (e) { res.status(400).json({ error: e.message }); }
 });
 
+// ============================================================================
+// EDICIÓN Y BORRADO DE PRÉSTAMOS Y ABONOS  (admin/gerente, con PIN)
+// Insertar en server.js junto a los demás endpoints de /api/nomina/prestamos
+// ============================================================================
+
+// Helper local: recalcula saldo_actual y estado de un préstamo desde sus abonos vivos.
+// Fuente de verdad: saldo_actual = monto_original - SUM(abonos no borrados).
+function recalcPrestamo(db, prestamoId, now) {
+  const pr = db.prepare('SELECT * FROM prestamos WHERE id = ? AND deleted = 0').get(prestamoId);
+  if (!pr) throw new Error('préstamo no existe');
+  const row = db.prepare(
+    'SELECT COALESCE(SUM(monto), 0) AS abonado FROM prestamos_abonos WHERE prestamo_id = ? AND deleted = 0'
+  ).get(prestamoId);
+  const abonado = Number(row.abonado) || 0;
+  const nuevoSaldo = Math.max(0, Number(pr.monto_original) - abonado);
+  // Si estaba CANCELADO, no lo reactivamos automáticamente.
+  let nuevoEstado = pr.estado;
+  if (pr.estado !== 'CANCELADO') {
+    nuevoEstado = nuevoSaldo <= 0.01 ? 'SALDADO' : 'ACTIVO';
+  }
+  const fechaSaldado = nuevoEstado === 'SALDADO' ? (pr.fecha_saldado || new Date().toISOString().slice(0, 10)) : null;
+  db.prepare('UPDATE prestamos SET saldo_actual = ?, estado = ?, fecha_saldado = ?, updated_at = ? WHERE id = ?')
+    .run(nuevoSaldo, nuevoEstado, fechaSaldado, now, prestamoId);
+  return { saldo_actual: nuevoSaldo, estado: nuevoEstado };
+}
+
+// ---------------------------------------------------------------------------
+// 1) EDITAR PRÉSTAMO  ·  PUT /api/nomina/prestamos/:id   (requirePin)
+//    Edita: monto_original, motivo, abono_sugerido_semanal, comentario.
+//    Si cambia monto_original, recalcula saldo y estado desde los abonos.
+//    NO toca abonos ni el movimiento de entrega.
+// ---------------------------------------------------------------------------
+app.put('/api/nomina/prestamos/:id', auth, requirePin, (req, res) => {
+  const tx = db.transaction((prestamoId, body) => {
+    const pr = db.prepare('SELECT * FROM prestamos WHERE id = ? AND deleted = 0').get(prestamoId);
+    if (!pr) throw new Error('préstamo no existe');
+
+    const now = Date.now();
+    const montoOriginal = (body.monto_original != null) ? Number(body.monto_original) : Number(pr.monto_original);
+    if (!(montoOriginal > 0)) throw new Error('monto_original inválido');
+
+    const abonadoRow = db.prepare(
+      'SELECT COALESCE(SUM(monto),0) AS abonado FROM prestamos_abonos WHERE prestamo_id = ? AND deleted = 0'
+    ).get(prestamoId);
+    const abonado = Number(abonadoRow.abonado) || 0;
+    if (montoOriginal + 0.01 < abonado) {
+      throw new Error(`el monto (${montoOriginal.toFixed(2)}) no puede ser menor a lo ya abonado (${abonado.toFixed(2)})`);
+    }
+
+    const motivo = (body.motivo != null) ? String(body.motivo) : pr.motivo;
+    const sugerido = (body.abono_sugerido_semanal != null) ? Number(body.abono_sugerido_semanal) : Number(pr.abono_sugerido_semanal || 0);
+    const comentario = (body.comentario != null) ? String(body.comentario) : pr.comentario;
+
+    db.prepare(`UPDATE prestamos
+      SET monto_original = ?, motivo = ?, abono_sugerido_semanal = ?, comentario = ?, updated_at = ?
+      WHERE id = ?`).run(montoOriginal, motivo, sugerido, comentario, now, prestamoId);
+
+    // Si el préstamo se entregó vía movimiento GASTO y cambió el monto original,
+    // ajustamos ese movimiento de entrega para que la caja refleje lo correcto.
+    if (Number(montoOriginal) !== Number(pr.monto_original) && pr.mov_entrega_id) {
+      const movEntrega = db.prepare('SELECT * FROM movs WHERE id = ? AND deleted = 0').get(pr.mov_entrega_id);
+      if (movEntrega) {
+        db.prepare('UPDATE movs SET monto = ?, updated_at = ? WHERE id = ?')
+          .run(montoOriginal, now, pr.mov_entrega_id);
+      }
+    }
+
+    const r = recalcPrestamo(db, prestamoId, now);
+    audit(req, 'EDITAR', 'prestamos', prestamoId,
+      `Préstamo de ${pr.empleado_nombre} editado · monto $${montoOriginal.toFixed(2)} · saldo $${r.saldo_actual.toFixed(2)}`);
+
+    return db.prepare(`SELECT pr.*, c.nombre AS caja_origen_nombre FROM prestamos pr
+      LEFT JOIN cajas c ON c.id = pr.caja_origen WHERE pr.id = ?`).get(prestamoId);
+  });
+  try { res.json(tx(req.params.id, req.body || {})); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ---------------------------------------------------------------------------
+// 2) EDITAR ABONO  ·  PUT /api/nomina/prestamos/:id/abonos/:abonoId  (requirePin)
+//    Cambia monto y/o comentario de un abono. Ajusta el mov INGRESO asociado
+//    (si lo hay) y recalcula saldo/estado del préstamo.
+// ---------------------------------------------------------------------------
+app.put('/api/nomina/prestamos/:id/abonos/:abonoId', auth, requirePin, (req, res) => {
+  const tx = db.transaction((prestamoId, abonoId, body) => {
+    const pr = db.prepare('SELECT * FROM prestamos WHERE id = ? AND deleted = 0').get(prestamoId);
+    if (!pr) throw new Error('préstamo no existe');
+    const ab = db.prepare('SELECT * FROM prestamos_abonos WHERE id = ? AND prestamo_id = ? AND deleted = 0').get(abonoId, prestamoId);
+    if (!ab) throw new Error('abono no existe');
+
+    const now = Date.now();
+    const nuevoMonto = (body.monto != null) ? Number(body.monto) : Number(ab.monto);
+    if (!(nuevoMonto > 0)) throw new Error('monto inválido');
+
+    // Validar que el total de abonos no supere el monto original del préstamo.
+    const otrosRow = db.prepare(
+      'SELECT COALESCE(SUM(monto),0) AS total FROM prestamos_abonos WHERE prestamo_id = ? AND deleted = 0 AND id != ?'
+    ).get(prestamoId, abonoId);
+    const otros = Number(otrosRow.total) || 0;
+    if (otros + nuevoMonto > Number(pr.monto_original) + 0.01) {
+      throw new Error(`el total de abonos ($${(otros + nuevoMonto).toFixed(2)}) excede el monto del préstamo ($${Number(pr.monto_original).toFixed(2)})`);
+    }
+
+    const comentario = (body.comentario != null) ? String(body.comentario) : ab.comentario;
+
+    // Ajustar el movimiento de caja asociado, si existe (abonos por descuento de
+    // nómina no tienen mov_id).
+    if (ab.mov_id) {
+      const mov = db.prepare('SELECT * FROM movs WHERE id = ? AND deleted = 0').get(ab.mov_id);
+      if (mov) {
+        db.prepare('UPDATE movs SET monto = ?, updated_at = ? WHERE id = ?').run(nuevoMonto, now, ab.mov_id);
+      }
+    }
+
+    db.prepare('UPDATE prestamos_abonos SET monto = ?, comentario = ?, updated_at = ? WHERE id = ?')
+      .run(nuevoMonto, comentario, now, abonoId);
+
+    const r = recalcPrestamo(db, prestamoId, now);
+    audit(req, 'EDITAR', 'prestamos_abonos', abonoId,
+      `Abono de ${pr.empleado_nombre}: $${Number(ab.monto).toFixed(2)} → $${nuevoMonto.toFixed(2)} · saldo $${r.saldo_actual.toFixed(2)}`);
+
+    return db.prepare(`SELECT pr.*, c.nombre AS caja_origen_nombre FROM prestamos pr
+      LEFT JOIN cajas c ON c.id = pr.caja_origen WHERE pr.id = ?`).get(prestamoId);
+  });
+  try { res.json(tx(req.params.id, req.params.abonoId, req.body || {})); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// ---------------------------------------------------------------------------
+// 3) BORRAR ABONO  ·  DELETE /api/nomina/prestamos/:id/abonos/:abonoId  (requirePin)
+//    Marca el abono como borrado, revierte su mov INGRESO (si lo hay) y
+//    devuelve el monto al saldo del préstamo (reactiva a ACTIVO si procede).
+// ---------------------------------------------------------------------------
+app.delete('/api/nomina/prestamos/:id/abonos/:abonoId', auth, requirePin, (req, res) => {
+  const tx = db.transaction((prestamoId, abonoId) => {
+    const pr = db.prepare('SELECT * FROM prestamos WHERE id = ? AND deleted = 0').get(prestamoId);
+    if (!pr) throw new Error('préstamo no existe');
+    const ab = db.prepare('SELECT * FROM prestamos_abonos WHERE id = ? AND prestamo_id = ? AND deleted = 0').get(abonoId, prestamoId);
+    if (!ab) throw new Error('abono no existe');
+
+    const now = Date.now();
+
+    // Revertir el ingreso en caja, si el abono generó movimiento.
+    if (ab.mov_id) {
+      db.prepare('UPDATE movs SET deleted = 1, updated_at = ? WHERE id = ?').run(now, ab.mov_id);
+    }
+    db.prepare('UPDATE prestamos_abonos SET deleted = 1, updated_at = ? WHERE id = ?').run(now, abonoId);
+
+    const r = recalcPrestamo(db, prestamoId, now);
+    audit(req, 'BORRAR', 'prestamos_abonos', abonoId,
+      `Abono de ${pr.empleado_nombre} eliminado: $${Number(ab.monto).toFixed(2)} · saldo $${r.saldo_actual.toFixed(2)}`);
+
+    return db.prepare(`SELECT pr.*, c.nombre AS caja_origen_nombre FROM prestamos pr
+      LEFT JOIN cajas c ON c.id = pr.caja_origen WHERE pr.id = ?`).get(prestamoId);
+  });
+  try { res.json(tx(req.params.id, req.params.abonoId)); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+
 // === FIN RUTAS DE NOMINA ===
 
 

@@ -1535,12 +1535,63 @@ function ComisionesTablaSection() {
 // =====================================================
 // SECCIÓN 5: PRÉSTAMOS
 // =====================================================
+// Modal reutilizable para pedir PIN (4 dígitos) antes de una acción sensible.
+// onConfirm(pin) recibe el pin; el componente que lo invoca hace la llamada.
+function ModalPinNom({ titulo, mensaje, onConfirm, onClose }) {
+  const [pin, setPin] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if (!/^\d{4}$/.test(pin)) { setError('El PIN debe ser de 4 dígitos'); return; }
+    setSaving(true); setError('');
+    try {
+      await onConfirm(pin);
+    } catch (e) { setError(e.message); setSaving(false); }
+  };
+
+  return (
+    <div className="nom-modal-bg" onClick={onClose} style={{ zIndex: 60 }}>
+      <div className="nom-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 380 }}>
+        <div className="nom-modal-head">
+          <h2>🔒 {titulo || 'Confirmar con PIN'}</h2>
+          <button className="close-x" onClick={onClose}>✕</button>
+        </div>
+        <div className="nom-modal-body">
+          {error && <div className="nom-error">⚠ {error}</div>}
+          {mensaje && <div className="nom-banner info" style={{ marginBottom: 12 }}>
+            <span className="ico">⚠️</span>
+            <div className="ctnt" style={{ fontSize: 12 }}>{mensaje}</div>
+          </div>}
+          <div className="nom-form-row col1">
+            <div>
+              <label className="nom-label">PIN de autorización *</label>
+              <input type="password" inputMode="numeric" maxLength={4} className="nom-input"
+                value={pin} autoFocus
+                onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                onKeyDown={e => { if (e.key === 'Enter') submit(); }}
+                placeholder="••••" style={{ letterSpacing: '8px', textAlign: 'center', fontSize: 22 }} />
+            </div>
+          </div>
+        </div>
+        <div className="nom-modal-foot">
+          <button className="nom-btn nom-btn-ghost" onClick={onClose}>Cancelar</button>
+          <button className="nom-btn nom-btn-primary" onClick={submit} disabled={saving}>
+            {saving ? '⏳ Verificando…' : 'Confirmar'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function PrestamosSection() {
   const [prestamos, setPrestamos] = useState([]);
   const [empleados, setEmpleados] = useState([]);
   const [cajas, setCajas] = useState([]);
   const [filterEstado, setFilterEstado] = useState('ACTIVO');
   const [showCreate, setShowCreate] = useState(false);
+  const [editar, setEditar] = useState(null);
   const [abonar, setAbonar] = useState(null);
   const [detalle, setDetalle] = useState(null);
   const [error, setError] = useState('');
@@ -1608,6 +1659,7 @@ function PrestamosSection() {
                     </td>
                     <td>
                       <button className="nom-btn nom-btn-sm nom-btn-ghost" onClick={() => setDetalle(p.id)} title="Ver detalle">👁</button>
+                      {p.estado !== 'CANCELADO' && <button className="nom-btn nom-btn-sm nom-btn-ghost" onClick={() => setEditar(p)} title="Editar préstamo">✎</button>}
                       {p.estado === 'ACTIVO' && <button className="nom-btn nom-btn-sm nom-btn-success" onClick={() => setAbonar(p)} title="Abonar">💵</button>}
                     </td>
                   </tr>
@@ -1621,34 +1673,41 @@ function PrestamosSection() {
       {showCreate && <ModalPrestamo empleados={empleados} cajas={cajas}
         onClose={() => setShowCreate(false)}
         onSaved={() => { setShowCreate(false); cargar(); }} />}
+      {editar && <ModalPrestamo empleados={empleados} cajas={cajas} prestamo={editar}
+        onClose={() => setEditar(null)}
+        onSaved={() => { setEditar(null); cargar(); }} />}
       {abonar && <ModalAbonarPrestamo prestamo={abonar} cajas={cajas}
         onClose={() => setAbonar(null)}
         onSaved={() => { setAbonar(null); cargar(); }} />}
-      {detalle && <ModalDetallePrestamo prestamoId={detalle} onClose={() => setDetalle(null)} />}
+      {detalle && <ModalDetallePrestamo prestamoId={detalle} onClose={() => setDetalle(null)} onChanged={cargar} />}
     </div>
   );
 }
 
-function ModalPrestamo({ empleados, cajas, onClose, onSaved }) {
+function ModalPrestamo({ empleados, cajas, prestamo, onClose, onSaved }) {
+  const esEdicion = !!prestamo;
   const [form, setForm] = useState({
-    empleado_id: empleados[0]?.id || '',
-    fecha: new Date().toISOString().slice(0, 10),
-    monto_original: '',
-    abono_sugerido_semanal: '',
-    motivo: '',
-    caja_origen: cajas[0]?.id || '',
-    metodo: 'EFECTIVO',
-    comentario: ''
+    empleado_id: prestamo?.empleado_id || empleados[0]?.id || '',
+    fecha: prestamo?.fecha || new Date().toISOString().slice(0, 10),
+    monto_original: prestamo?.monto_original ?? '',
+    abono_sugerido_semanal: prestamo?.abono_sugerido_semanal ?? '',
+    motivo: prestamo?.motivo || '',
+    caja_origen: prestamo?.caja_origen || cajas[0]?.id || '',
+    metodo: prestamo?.metodo || 'EFECTIVO',
+    comentario: prestamo?.comentario || ''
   });
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [pedirPin, setPedirPin] = useState(false);
 
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
+  // Crear: POST directo. Editar: validar y luego pedir PIN.
   const submit = async () => {
-    if (!form.empleado_id) { setError('Selecciona empleado'); return; }
+    if (!esEdicion && !form.empleado_id) { setError('Selecciona empleado'); return; }
     if (!(Number(form.monto_original) > 0)) { setError('Monto inválido'); return; }
-    if (!form.caja_origen) { setError('Selecciona caja'); return; }
+    if (!esEdicion && !form.caja_origen) { setError('Selecciona caja'); return; }
+    if (esEdicion) { setError(''); setPedirPin(true); return; }
     setSaving(true); setError('');
     try {
       await apiNom('/api/nomina/prestamos', { method: 'POST', body: JSON.stringify(form) });
@@ -1657,29 +1716,56 @@ function ModalPrestamo({ empleados, cajas, onClose, onSaved }) {
     setSaving(false);
   };
 
+  const guardarEdicion = async (pin) => {
+    await apiNom('/api/nomina/prestamos/' + prestamo.id, {
+      method: 'PUT',
+      body: JSON.stringify({
+        monto_original: Number(form.monto_original),
+        motivo: form.motivo,
+        abono_sugerido_semanal: Number(form.abono_sugerido_semanal) || 0,
+        comentario: form.comentario,
+        pin
+      })
+    });
+    setPedirPin(false);
+    onSaved();
+  };
+
   return (
     <div className="nom-modal-bg" onClick={onClose}>
       <div className="nom-modal" onClick={e => e.stopPropagation()}>
         <div className="nom-modal-head">
-          <h2>🤝 Nuevo préstamo</h2>
+          <h2>{esEdicion ? '✎ Editar préstamo' : '🤝 Nuevo préstamo'}</h2>
           <button className="close-x" onClick={onClose}>✕</button>
         </div>
         <div className="nom-modal-body">
           {error && <div className="nom-error">⚠ {error}</div>}
-          <div className="nom-banner info">
-            <span className="ico">💡</span>
-            <div className="ctnt" style={{ fontSize: 12 }}>
-              Esto generará un movimiento GASTO en categoría <strong>PRESTAMOS EMPLEADOS</strong> (autoexcluida del P&L).
-              Cuando el empleado abone, se registra como INGRESO en la categoría <strong>ABONO PRESTAMO EMPLEADO</strong>.
+          {esEdicion ? (
+            <div className="nom-banner info">
+              <span className="ico">✎</span>
+              <div className="ctnt" style={{ fontSize: 12 }}>
+                Editando préstamo de <strong>{prestamo.empleado_nombre}</strong>. Si cambias el monto, el saldo se recalcula
+                automáticamente y se ajusta el movimiento de entrega en caja. Requiere PIN.
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="nom-banner info">
+              <span className="ico">💡</span>
+              <div className="ctnt" style={{ fontSize: 12 }}>
+                Esto generará un movimiento GASTO en categoría <strong>PRESTAMOS EMPLEADOS</strong> (autoexcluida del P&L).
+                Cuando el empleado abone, se registra como INGRESO en la categoría <strong>ABONO PRESTAMO EMPLEADO</strong>.
+              </div>
+            </div>
+          )}
           <div className="nom-form-row col1">
             <div>
               <label className="nom-label">Empleado *</label>
-              <select className="nom-select" value={form.empleado_id} onChange={e => set('empleado_id', e.target.value)}>
+              <select className="nom-select" value={form.empleado_id} disabled={esEdicion}
+                onChange={e => set('empleado_id', e.target.value)}>
                 <option value="">— Seleccionar —</option>
                 {empleados.map(e => <option key={e.id} value={e.id}>{e.nombre}{e.departamento_nombre ? ` · ${e.departamento_nombre}` : ''}</option>)}
               </select>
+              {esEdicion && <div style={{ fontSize: 10, color: 'var(--muted)', marginTop: 2 }}>El empleado no se puede cambiar al editar.</div>}
             </div>
           </div>
           <div className="nom-form-row">
@@ -1697,26 +1783,30 @@ function ModalPrestamo({ empleados, cajas, onClose, onSaved }) {
           <div className="nom-form-row">
             <div>
               <label className="nom-label">Fecha</label>
-              <input type="date" className="nom-input" value={form.fecha} onChange={e => set('fecha', e.target.value)} />
+              <input type="date" className="nom-input" value={form.fecha} disabled={esEdicion}
+                onChange={e => set('fecha', e.target.value)} />
             </div>
             <div>
               <label className="nom-label">Método</label>
-              <select className="nom-select" value={form.metodo} onChange={e => set('metodo', e.target.value)}>
+              <select className="nom-select" value={form.metodo} disabled={esEdicion}
+                onChange={e => set('metodo', e.target.value)}>
                 <option value="EFECTIVO">Efectivo</option>
                 <option value="TRANSFERENCIA">Transferencia</option>
                 <option value="CHEQUE">Cheque</option>
               </select>
             </div>
           </div>
-          <div className="nom-form-row col1">
-            <div>
-              <label className="nom-label">Caja de salida *</label>
-              <select className="nom-select" value={form.caja_origen} onChange={e => set('caja_origen', e.target.value)}>
-                <option value="">— Seleccionar —</option>
-                {cajas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-              </select>
+          {!esEdicion && (
+            <div className="nom-form-row col1">
+              <div>
+                <label className="nom-label">Caja de salida *</label>
+                <select className="nom-select" value={form.caja_origen} onChange={e => set('caja_origen', e.target.value)}>
+                  <option value="">— Seleccionar —</option>
+                  {cajas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                </select>
+              </div>
             </div>
-          </div>
+          )}
           <div className="nom-form-row col1">
             <div>
               <label className="nom-label">Motivo</label>
@@ -1728,10 +1818,15 @@ function ModalPrestamo({ empleados, cajas, onClose, onSaved }) {
         <div className="nom-modal-foot">
           <button className="nom-btn nom-btn-ghost" onClick={onClose}>Cancelar</button>
           <button className="nom-btn nom-btn-primary" onClick={submit} disabled={saving}>
-            {saving ? '⏳ Guardando…' : 'Entregar préstamo'}
+            {saving ? '⏳ Guardando…' : (esEdicion ? 'Guardar cambios' : 'Entregar préstamo')}
           </button>
         </div>
       </div>
+      {pedirPin && <ModalPinNom
+        titulo="Confirmar edición"
+        mensaje={`Vas a editar el préstamo de ${prestamo.empleado_nombre}. Esta acción ajusta saldos y caja.`}
+        onConfirm={guardarEdicion}
+        onClose={() => setPedirPin(false)} />}
     </div>
   );
 }
@@ -1819,13 +1914,27 @@ function ModalAbonarPrestamo({ prestamo, cajas, onClose, onSaved }) {
   );
 }
 
-function ModalDetallePrestamo({ prestamoId, onClose }) {
+function ModalDetallePrestamo({ prestamoId, onClose, onChanged }) {
   const [pr, setPr] = useState(null);
   const [error, setError] = useState('');
+  const [editAbono, setEditAbono] = useState(null);   // abono en edición
+  const [delAbono, setDelAbono] = useState(null);      // abono a borrar (pide PIN)
 
-  useEffect(() => {
+  const cargar = () => {
     apiNom('/api/nomina/prestamos/' + prestamoId).then(setPr).catch(e => setError(e.message));
-  }, [prestamoId]);
+  };
+  useEffect(() => { cargar(); }, [prestamoId]);
+
+  const refrescar = () => { cargar(); if (onChanged) onChanged(); };
+
+  const borrarAbono = async (pin) => {
+    await apiNom('/api/nomina/prestamos/' + prestamoId + '/abonos/' + delAbono.id, {
+      method: 'DELETE',
+      body: JSON.stringify({ pin })
+    });
+    setDelAbono(null);
+    refrescar();
+  };
 
   if (error) return (
     <div className="nom-modal-bg" onClick={onClose}>
@@ -1859,7 +1968,7 @@ function ModalDetallePrestamo({ prestamoId, onClose }) {
           </h3>
           {pr.abonos.length === 0 ? <div className="nom-empty">Sin abonos aún</div> :
             <table className="nom-table" style={{ minWidth: 'auto', marginTop: 10 }}>
-              <thead><tr><th>Fecha</th><th className="num">Monto</th><th>Método</th><th>Caja</th><th>Comentario</th></tr></thead>
+              <thead><tr><th>Fecha</th><th className="num">Monto</th><th>Método</th><th>Caja</th><th>Comentario</th><th>Acciones</th></tr></thead>
               <tbody>
                 {pr.abonos.map(a => (
                   <tr key={a.id}>
@@ -1868,6 +1977,10 @@ function ModalDetallePrestamo({ prestamoId, onClose }) {
                     <td>{a.metodo}</td>
                     <td>{a.caja_nombre || '—'}</td>
                     <td style={{ fontSize: 11 }}>{a.comentario || '—'}</td>
+                    <td>
+                      <button className="nom-btn nom-btn-sm nom-btn-ghost" onClick={() => setEditAbono(a)} title="Editar abono">✎</button>
+                      <button className="nom-btn nom-btn-sm nom-btn-ghost" onClick={() => setDelAbono(a)} title="Borrar abono" style={{ color: 'var(--primary)' }}>🗑</button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -1878,6 +1991,82 @@ function ModalDetallePrestamo({ prestamoId, onClose }) {
           <button className="nom-btn nom-btn-ghost" onClick={onClose}>Cerrar</button>
         </div>
       </div>
+
+      {editAbono && <ModalEditarAbono prestamoId={prestamoId} abono={editAbono}
+        montoOriginal={pr.monto_original}
+        onClose={() => setEditAbono(null)}
+        onSaved={() => { setEditAbono(null); refrescar(); }} />}
+
+      {delAbono && <ModalPinNom
+        titulo="Borrar abono"
+        mensaje={`Vas a eliminar el abono de ${fmtNomMXN(delAbono.monto)} del ${fmtDate(delAbono.fecha)}. Se revertirá el ingreso en caja y el saldo del préstamo aumentará.`}
+        onConfirm={borrarAbono}
+        onClose={() => setDelAbono(null)} />}
+    </div>
+  );
+}
+
+// Modal para editar el monto/comentario de un abono existente (pide PIN).
+function ModalEditarAbono({ prestamoId, abono, montoOriginal, onClose, onSaved }) {
+  const [monto, setMonto] = useState(abono.monto);
+  const [comentario, setComentario] = useState(abono.comentario || '');
+  const [error, setError] = useState('');
+  const [pedirPin, setPedirPin] = useState(false);
+
+  const continuar = () => {
+    if (!(Number(monto) > 0)) { setError('Monto inválido'); return; }
+    setError(''); setPedirPin(true);
+  };
+
+  const guardar = async (pin) => {
+    await apiNom('/api/nomina/prestamos/' + prestamoId + '/abonos/' + abono.id, {
+      method: 'PUT',
+      body: JSON.stringify({ monto: Number(monto), comentario, pin })
+    });
+    setPedirPin(false);
+    onSaved();
+  };
+
+  return (
+    <div className="nom-modal-bg" onClick={onClose} style={{ zIndex: 55 }}>
+      <div className="nom-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 420 }}>
+        <div className="nom-modal-head">
+          <h2>✎ Editar abono</h2>
+          <button className="close-x" onClick={onClose}>✕</button>
+        </div>
+        <div className="nom-modal-body">
+          {error && <div className="nom-error">⚠ {error}</div>}
+          <div className="nom-banner info" style={{ marginBottom: 12 }}>
+            <span className="ico">ℹ️</span>
+            <div className="ctnt" style={{ fontSize: 12 }}>
+              Abono del {fmtDate(abono.fecha)} · método {abono.metodo}.
+              {abono.mov_id ? ' Se ajustará el ingreso en caja.' : ' Sin movimiento de caja (fue descuento de nómina).'}
+            </div>
+          </div>
+          <div className="nom-form-row">
+            <div>
+              <label className="nom-label">Monto del abono *</label>
+              <input type="number" step="0.01" className="nom-input" value={monto} autoFocus
+                onChange={e => setMonto(e.target.value)} placeholder="0.00" />
+            </div>
+          </div>
+          <div className="nom-form-row col1">
+            <div>
+              <label className="nom-label">Comentario</label>
+              <input className="nom-input" value={comentario} onChange={e => setComentario(e.target.value)} />
+            </div>
+          </div>
+        </div>
+        <div className="nom-modal-foot">
+          <button className="nom-btn nom-btn-ghost" onClick={onClose}>Cancelar</button>
+          <button className="nom-btn nom-btn-primary" onClick={continuar}>Guardar cambios</button>
+        </div>
+      </div>
+      {pedirPin && <ModalPinNom
+        titulo="Confirmar edición de abono"
+        mensaje={`Cambiar el abono a ${fmtNomMXN(Number(monto))} recalcula el saldo del préstamo.`}
+        onConfirm={guardar}
+        onClose={() => setPedirPin(false)} />}
     </div>
   );
 }
