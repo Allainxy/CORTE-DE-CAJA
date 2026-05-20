@@ -28,3 +28,7 @@ Thumbs.db
 
 _vps_frontend/
 backend/recover-movs.js
+
+public/
+backups/
+data/
