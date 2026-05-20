@@ -70,6 +70,15 @@ window.KBotAPI = (function () {
     return r;
   }
 
+  // pullFull: sincronización completa desde cero (since=0). Usado cuando la BD
+  // local está vacía o hay que reconstruir todo el espejo offline.
+  async function pullFull() {
+    if (!enabled() || !token()) return null;
+    const r = await req('/api/sync?since=0');
+    if (r && r.serverTime != null) localStorage.setItem(SINCE_KEY, String(r.serverTime));
+    return r;
+  }
+
   async function syncMov(mov) {
     queueAdd({ method: 'POST', path: '/api/movs', body: mov });
     flushQueue();
@@ -77,6 +86,15 @@ window.KBotAPI = (function () {
   async function deleteMov(id) {
     queueAdd({ method: 'DELETE', path: '/api/movs/' + id });
     flushQueue();
+  }
+  // deleteMovWithPin: borrado online inmediato con PIN (no usa cola). Devuelve
+  // la respuesta del servidor; el frontend tolera 404 ("ya borrado").
+  async function deleteMovWithPin(id, pin) {
+    return req('/api/movs/' + id, { method: 'DELETE', body: JSON.stringify({ pin }) });
+  }
+  // deleteTransfer: borra ambos lados de una transferencia con PIN (online).
+  async function deleteTransfer(tid, pin) {
+    return req('/api/transferencia/' + tid, { method: 'DELETE', body: JSON.stringify({ pin }) });
   }
   async function syncCat(cat) {
     queueAdd({ method: 'POST', path: '/api/cats', body: cat });
@@ -119,7 +137,9 @@ window.KBotAPI = (function () {
 
   return {
     enabled, token, user, login, logout,
-    pull, syncMov, deleteMov, syncCat, deleteCat, updateCat, syncGroup, deleteGroup, updateGroup, reorderGroups, syncBudget, bulkMovs,
+    pull, pullFull, syncMov, deleteMov, deleteMovWithPin, deleteTransfer,
+    syncCat, deleteCat, updateCat, syncGroup, deleteGroup, updateGroup,
+    reorderGroups, syncBudget, bulkMovs,
     flushQueue, queueGet
   };
 })();
