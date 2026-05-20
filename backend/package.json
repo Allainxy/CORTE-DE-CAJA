@@ -1,6 +1,6 @@
 {
   "name": "kbotanas-backend",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "Backend API para K-BOTANAS Control de Caja",
   "main": "server.js",
   "scripts": {

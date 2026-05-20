@@ -11,6 +11,74 @@ El proyecto sigue [versionado semántico](https://semver.org/lang/es/) — `MAYO
 
 ---
 
+## [1.15.2] — 2026-05-19
+
+### 📌 Resumen ejecutivo
+
+**Fix crítico de saldos:** los gastos y gasolina capturados en los cortes de ruta ya no descuentan dos veces de la Caja Principal. Antes del fix, cuando un vendedor entregaba el efectivo de su ruta (que ya venía neto de gastos), el sistema registraba el INGRESO por el efectivo entregado **y además** un GASTO contra la misma caja por el monto que el vendedor había usado en ruta — descontando el mismo dinero dos veces.
+
+**Ejemplo (caso real, RUTA 2 del 18/05):** venta sistema $4,580.54 · efectivo entregado $4,308.50 · gastos de ruta $272. Saldo que aplicaba a Caja Principal hasta esta versión: $4,036.50 (mal, doble descuento). Saldo correcto post-fix: $4,308.50.
+
+**Para qué sirve:** los saldos de Caja Principal vuelven a corresponder con el efectivo físico que realmente hay en caja. Los gastos de ruta siguen apareciendo en Movimientos y reportes (para trazabilidad y análisis de gasto por categoría), pero llevan un badge **"no afecta saldo"** y no impactan el balance.
+
+**Backfill retroactivo:** la migración corrige automáticamente todos los movimientos históricos. No se requiere acción manual; al primer arranque del servidor con esta versión, se ejecuta un `UPDATE movs SET afecta_saldo = 0 WHERE src = 'venta-detalle' AND tipo = 'GASTO'` y el log reporta cuántos movs se ajustaron.
+
+### 🐛 Fixed
+
+#### Bug F6 — Doble descuento de gastos/gasolina en Caja Principal
+
+**Síntoma:** el saldo de Caja Principal en `/api/cajas` y en el dashboard ejecutivo aparecía por debajo de lo que el efectivo físico mostraba. La diferencia acumulada equivalía a la suma de gastos y gasolina capturados en cortes de ruta a lo largo del tiempo.
+
+**Causa raíz:** el endpoint `POST /api/ventas/cortes/detalle` (`backend/server.js`) insertaba movimientos de tipo GASTO contra `caja = caja_efectivo_id` por los importes de gastos/gasolina. La función `calcularSaldoCaja()` los restaba del saldo. Pero ese dinero **nunca entró a la caja física**: el vendedor ya lo había gastado en ruta antes de entregar el efectivo neto. El INGRESO registrado ya era neto, y restar el GASTO encima descontaba el mismo dinero por segunda vez.
+
+**Fix:** introducción del flag `afecta_saldo INTEGER DEFAULT 1` en la tabla `movs`. Los movimientos de gastos/gasolina provenientes de cortes de ruta se insertan con `afecta_saldo = 0`. `calcularSaldoCaja()` y `saldosCajas` del dashboard ahora filtran `COALESCE(afecta_saldo, 1) = 1`, excluyendo estos registros del balance sin perderlos para trazabilidad.
+
+### ✨ Added
+
+#### Columna `afecta_saldo` en tabla `movs`
+
+- **Schema:** `afecta_saldo INTEGER DEFAULT 1` (NOT NULL implícito vía DEFAULT, retrocompatible con `COALESCE`).
+- **Semántica:**
+  - `1` (default) — comportamiento normal: el movimiento mueve el saldo de su caja.
+  - `0` — registro informativo: aparece en Movimientos y reportes por categoría, pero no afecta el balance de la caja.
+- **Migración idempotente:** `ALTER TABLE movs ADD COLUMN afecta_saldo INTEGER DEFAULT 1` ejecutado solo si la columna no existe.
+- **Backfill retroactivo:** la primera vez que la migración corre, ejecuta `UPDATE movs SET afecta_saldo = 0 WHERE src = 'venta-detalle' AND tipo = 'GASTO' AND deleted = 0` para corregir el histórico. El log de arranque reporta el conteo de movs corregidos.
+
+#### Badge "no afecta saldo" en lista de Movimientos
+
+- En `movs-list.jsx`, las filas con `afecta_saldo = 0` muestran un badge color índigo (`#E0E7FF` / `#3730A3`) con tooltip explicativo. Facilita auditoría visual.
+
+#### Columna `afecta_saldo` en exportaciones
+
+- El endpoint `GET /api/export` (CSV y XLSX) incluye la columna `afecta_saldo` para que los reportes externos puedan distinguir movimientos contables de los que mueven caja.
+
+### 🔧 Changed
+
+#### Endpoint `POST /api/ventas/cortes/detalle`
+
+- Las inserciones de movs de GASTOS y GASOLINA ahora incluyen `afecta_saldo = 0` en los `INSERT INTO movs (...)`. La inserción de EFECTIVO (INGRESO) sigue con `afecta_saldo = 1` (default).
+- Comentario de cabecera del endpoint actualizado a v1.15.2.
+
+#### Frontend — `ventas-view.jsx`
+
+- Label del selector de caja: de *"Caja efectivo (entradas + gastos + gasolina)"* a *"Caja efectivo (solo entradas)"*.
+- Hint de la tabla: ahora explica que solo EFECTIVO mueve la caja; GASTOS y GASOLINA quedan registrados pero no afectan saldo porque ya estaban descontados del efectivo entregado.
+
+### ⚠️ Pendientes / deuda técnica reconocida
+
+- **Dashboard `/api/inteligencia/dashboard` — neto operacional subestimado:** el cálculo de `neto = ingresos - gastos` (líneas ~3777) usa `sumMovs` sobre INGRESOS y GASTOS de toda la tabla `movs`. Como el INGRESO registrado por los cortes ya está neto de gastos de ruta, y el GASTO sigue contando para el P&L (correctamente, son gasto real del negocio), el "neto" del dashboard queda subestimado por el monto de gastos de ruta. Este sesgo ya existía antes del fix; corregirlo requiere que el cálculo de ingresos del dashboard use la tabla `ventas` y `ventas_detalle_cortes.venta_sistema` en lugar de `movs.tipo='INGRESO'`. **Programado para un sprint futuro de reportes ejecutivos.**
+- **Otros endpoints que crean movs (compras, nómina, viáticos, transferencias, etc.):** no fueron tocados en este patch. Si en el futuro se identifica algún otro caso de "gasto que no debe mover caja" (por ejemplo, gastos ya provisionados que pasan por CxP), la columna `afecta_saldo` ya está disponible para usarse.
+
+### 🚀 Deploy notes
+
+1. Pull del código en el droplet, `pm2 restart kbotanas-erp` (o equivalente).
+2. **Validar en log de arranque** que aparezca: `🔧 Migración v1.15.2: columna afecta_saldo agregada a movs (N movimientos históricos corregidos retroactivamente)`. El número N debe ser positivo si había cortes registrados con gastos/gasolina.
+3. Verificar saldo de Caja Principal en `/api/cajas` antes y después — debería subir por el monto acumulado de gastos+gasolina de todos los cortes históricos.
+4. Spot-check en `/movimientos`: los movs de gastos de ruta deben mostrar el badge **"no afecta saldo"**.
+5. Crear un corte de prueba con gastos > 0 y verificar que el saldo de la caja sube SOLO por el monto de efectivo, no se descuenta el gasto.
+
+---
+
 ## [1.15.1] — 2026-05-12
 
 ### 📌 Resumen ejecutivo

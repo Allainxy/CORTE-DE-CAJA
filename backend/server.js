@@ -278,6 +278,25 @@ if (!movsColsCxP.includes('orden_id')) {
   console.log('🔧 Migración: columna orden_id agregada a movs');
 }
 
+// ─── Migración v1.15.2: columna afecta_saldo en movs ───
+// Bug previo: GASTOS/GASOLINA de cortes de ruta descontaban del saldo de Caja Principal,
+// pero ese dinero NUNCA entró a caja — el vendedor ya lo había gastado en ruta antes de
+// entregar el efectivo neto. El doble descuento causaba diferencias acumuladas en saldos.
+// Solución: flag afecta_saldo (default 1 = comportamiento normal). Los gastos descontados
+// de cortes se insertan con afecta_saldo = 0 → quedan registrados en movimientos y reportes
+// pero calcularSaldoCaja los ignora.
+const movsColsAfectaSaldo = db.prepare("PRAGMA table_info(movs)").all().map(c => c.name);
+if (!movsColsAfectaSaldo.includes('afecta_saldo')) {
+  db.exec(`ALTER TABLE movs ADD COLUMN afecta_saldo INTEGER DEFAULT 1`);
+  // Backfill retroactivo: marcar como afecta_saldo=0 todos los GASTOS de cortes de ruta
+  // ya registrados. src='venta-detalle' los identifica unívocamente (ver POST /api/ventas/cortes/detalle).
+  const r = db.prepare(`
+    UPDATE movs SET afecta_saldo = 0
+    WHERE src = 'venta-detalle' AND tipo = 'GASTO' AND deleted = 0
+  `).run();
+  console.log(`🔧 Migración v1.15.2: columna afecta_saldo agregada a movs (${r.changes} movimientos históricos corregidos retroactivamente)`);
+}
+
 // ===================================================
 // 8b) Tabla ordenes_compra (cabecera)
 // ===================================================
@@ -739,15 +758,18 @@ app.put('/api/cats/:id', auth, requireAdmin, (req, res) => {
 
 // ---------- Cajas / Cuentas ----------
 // Helper: calcula saldo de una caja sumando movimientos (incluye transferencias)
+// v1.15.2: respeta el flag afecta_saldo — movs con afecta_saldo=0 NO mueven el saldo
+// (típicamente gastos/gasolina de cortes de ruta que se descontaron de la venta del vendedor
+// y nunca entraron a la caja física).
 function calcularSaldoCaja(cajaId) {
   const caja = db.prepare('SELECT * FROM cajas WHERE id = ? AND deleted = 0').get(cajaId);
   if (!caja) return null;
   // Ingresos a esa caja (incluye transferencias entrantes que tienen tipo INGRESO)
   const ingresos = db.prepare(`SELECT COALESCE(SUM(monto),0) AS s FROM movs
-    WHERE caja = ? AND tipo = 'INGRESO' AND deleted = 0
+    WHERE caja = ? AND tipo = 'INGRESO' AND deleted = 0 AND COALESCE(afecta_saldo, 1) = 1
       AND (fecha >= ? OR ? IS NULL OR ? = '')`).get(cajaId, caja.fecha_inicial || '', caja.fecha_inicial, caja.fecha_inicial);
   const gastos = db.prepare(`SELECT COALESCE(SUM(monto),0) AS s FROM movs
-    WHERE caja = ? AND tipo = 'GASTO' AND deleted = 0
+    WHERE caja = ? AND tipo = 'GASTO' AND deleted = 0 AND COALESCE(afecta_saldo, 1) = 1
       AND (fecha >= ? OR ? IS NULL OR ? = '')`).get(cajaId, caja.fecha_inicial || '', caja.fecha_inicial, caja.fecha_inicial);
   return (caja.saldo_inicial || 0) + (ingresos.s || 0) - (gastos.s || 0);
 }
@@ -1505,7 +1527,7 @@ app.get('/api/export', auth, (req, res) => {
   const cajaFilter = req.query.caja || '';
 
   let sql = `SELECT m.fecha, m.tipo, m.categoria, m.concepto, m.monto, m.metodo,
-             c.nombre AS caja, m.usuario, m.notas
+             c.nombre AS caja, m.usuario, m.notas, COALESCE(m.afecta_saldo, 1) AS afecta_saldo
              FROM movs m LEFT JOIN cajas c ON m.caja = c.id
              WHERE m.deleted = 0`;
   const params = [];
@@ -1522,7 +1544,7 @@ app.get('/api/export', auth, (req, res) => {
   }
 
   if (formato === 'csv') {
-    const headers = ['fecha','tipo','categoria','concepto','monto','metodo','caja','usuario','notas'];
+    const headers = ['fecha','tipo','categoria','concepto','monto','metodo','caja','usuario','notas','afecta_saldo'];
     const lines = [headers.join(',')];
     movs.forEach(m => {
       const row = headers.map(h => {
@@ -1544,10 +1566,10 @@ app.get('/api/export', auth, (req, res) => {
   const ws = XLSX.utils.json_to_sheet(movs.map(m => ({
     fecha: m.fecha, tipo: m.tipo, categoria: m.categoria, concepto: m.concepto || '',
     monto: m.monto, metodo: m.metodo || 'EFECTIVO', caja: m.caja || '',
-    usuario: m.usuario || '', notas: m.notas || ''
+    usuario: m.usuario || '', notas: m.notas || '', afecta_saldo: m.afecta_saldo
   })));
   // Anchos de columna razonables
-  ws['!cols'] = [{wch:11},{wch:9},{wch:28},{wch:28},{wch:13},{wch:14},{wch:18},{wch:12},{wch:24}];
+  ws['!cols'] = [{wch:11},{wch:9},{wch:28},{wch:28},{wch:13},{wch:14},{wch:18},{wch:12},{wch:24},{wch:13}];
   XLSX.utils.book_append_sheet(wb, ws, 'MOVIMIENTOS');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -3475,11 +3497,13 @@ app.get('/api/ventas/cortes/detalle', auth, (req, res) => {
 
 // Crear/Actualizar corte (idempotente por id)
 // El frontend manda los 7 importes; backend crea hasta 5 movs (efectivo, transf, crédito, gastos, gasolina)
-// -------- Cortes de detalle v1.11.1 --------
+// -------- Cortes de detalle v1.15.2 --------
 // Cambios:
 //   - acepta nuevos campos: cheque_vale, tarjetas
 //   - TRANSFERENCIA, TARJETAS, CHEQUE/VALE NO crean mov en caja (solo registro)
-//   - Solo EFECTIVO, GASTOS, GASOLINA siguen creando mov en caja
+//   - EFECTIVO crea INGRESO con afecta_saldo=1 (mueve la caja)
+//   - GASTOS, GASOLINA crean GASTO con afecta_saldo=0 (registro y reportes, NO mueven caja —
+//     porque el vendedor ya los descontó del efectivo entregado, nunca pasaron por caja física)
 //   - El campo `diferencia` ahora considera todos los métodos: 
 //     (efectivo+transf+cheque_vale+tarjetas+credito+gastos) - venta_sistema
 app.post('/api/ventas/cortes/detalle', auth, (req, res) => {
@@ -3558,13 +3582,15 @@ app.post('/api/ventas/cortes/detalle', auth, (req, res) => {
         usuario, comentario || '', userId, now
       );
     }
-    // Gastos y gasolina siguen saliendo de caja efectivo
+    // v1.15.2 FIX: Gastos y gasolina se registran como movs (para trazabilidad y reportes)
+    // pero con afecta_saldo = 0 porque NO salen de la caja física: el vendedor ya los
+    // descontó del efectivo entregado, no salieron de Caja Principal.
     if (gastos > 0 && caja_efectivo_id) {
       movs.gastos = newMovId('vd-gas');
       db.prepare(`INSERT INTO movs (
         id, fecha, tipo, categoria, concepto, monto, metodo, caja,
-        usuario, notas, src, user_id, updated_at, deleted
-      ) VALUES (?, ?, 'GASTO', ?, ?, ?, 'EFECTIVO', ?, ?, ?, 'venta-detalle', ?, ?, 0)`).run(
+        usuario, notas, src, user_id, updated_at, deleted, afecta_saldo
+      ) VALUES (?, ?, 'GASTO', ?, ?, ?, 'EFECTIVO', ?, ?, ?, 'venta-detalle', ?, ?, 0, 0)`).run(
         movs.gastos, fecha, catGastosNombre, conceptoBase + ' (gastos)', gastos,
         caja_efectivo_id, usuario, comentario || '', userId, now
       );
@@ -3573,8 +3599,8 @@ app.post('/api/ventas/cortes/detalle', auth, (req, res) => {
       movs.gasolina = newMovId('vd-gas2');
       db.prepare(`INSERT INTO movs (
         id, fecha, tipo, categoria, concepto, monto, metodo, caja,
-        usuario, notas, src, user_id, updated_at, deleted
-      ) VALUES (?, ?, 'GASTO', ?, ?, ?, 'EFECTIVO', ?, ?, ?, 'venta-detalle', ?, ?, 0)`).run(
+        usuario, notas, src, user_id, updated_at, deleted, afecta_saldo
+      ) VALUES (?, ?, 'GASTO', ?, ?, ?, 'EFECTIVO', ?, ?, ?, 'venta-detalle', ?, ?, 0, 0)`).run(
         movs.gasolina, fecha, catGasolinaNombre, conceptoBase + ' (gasolina)', gasolina,
         caja_efectivo_id, usuario, comentario || '', userId, now
       );
@@ -4022,10 +4048,11 @@ app.get('/api/inteligencia/dashboard', auth, (req, res) => {
     `).all();
     const saldosCajas = cajasInfo.map(c => {
       const fi = c.fecha_inicial || '';
+      // v1.15.2: respeta afecta_saldo (gastos descontados de cortes no mueven caja)
       const movsCaja = db.prepare(`
         SELECT tipo, COALESCE(SUM(monto), 0) AS total
         FROM movs
-        WHERE caja = ? AND deleted = 0
+        WHERE caja = ? AND deleted = 0 AND COALESCE(afecta_saldo, 1) = 1
         ${fi ? 'AND fecha >= ?' : ''}
         GROUP BY tipo
       `).all(...(fi ? [c.id, fi] : [c.id]));

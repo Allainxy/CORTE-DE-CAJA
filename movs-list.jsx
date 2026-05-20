@@ -249,6 +249,13 @@ const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
                   )}
                   {m.src === 'xml' && <span className="src-badge">XML</span>}
                   {m.cxp_id && <span className="src-badge" style={{ background: '#FFD166', color: '#1F2937' }}>CxP</span>}
+                  {/* v1.15.2: badge para gastos descontados de ventas que NO mueven caja */}
+                  {(m.afecta_saldo === 0 || m.afecta_saldo === false) && (
+                    <span className="src-badge" style={{ background: '#E0E7FF', color: '#3730A3', marginLeft: 4 }}
+                      title="Este gasto fue descontado del efectivo entregado por el vendedor — queda registrado pero NO mueve el saldo de la caja">
+                      no afecta saldo
+                    </span>
+                  )}
                 </div>
                 <div className="caja-cell">
                   <span className="caja-dot" style={{ background: cajaInfo.color + '22', color: cajaInfo.color, padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
