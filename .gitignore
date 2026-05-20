@@ -1,4 +1,4 @@
-# Credenciales
+﻿# Credenciales
 **/.env
 **/.env.local
 **/.env.production
@@ -24,3 +24,7 @@
 # Sistema
 .DS_Store
 Thumbs.db
+
+
+_vps_frontend/
+backend/recover-movs.js

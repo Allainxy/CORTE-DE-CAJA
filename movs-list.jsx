@@ -99,7 +99,8 @@ const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
       'MÉTODO': m.metodo || '',
       'MONTO': m.tipo === 'INGRESO' ? Number(m.monto) : -Number(m.monto),
       'NOTAS': m.notas || '',
-      'ORIGEN': m.cxp_id ? 'CxP' : (m.src || 'manual')
+      'ORIGEN': m.cxp_id ? 'CxP' : (m.src || 'manual'),
+      'AFECTA SALDO': (m.afecta_saldo === 0 || m.afecta_saldo === false) ? 'NO' : 'SÍ'
     }));
 
     // Fila de totales al final
@@ -133,7 +134,8 @@ const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
       { wch: 14 },  // MÉTODO
       { wch: 13 },  // MONTO
       { wch: 30 },  // NOTAS
-      { wch: 10 }   // ORIGEN
+      { wch: 10 },  // ORIGEN
+      { wch: 12 }   // AFECTA SALDO
     ];
 
     // Formato moneda en columna MONTO (I = índice 8)
@@ -249,7 +251,6 @@ const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
                   )}
                   {m.src === 'xml' && <span className="src-badge">XML</span>}
                   {m.cxp_id && <span className="src-badge" style={{ background: '#FFD166', color: '#1F2937' }}>CxP</span>}
-                  {/* v1.15.2: badge para gastos descontados de ventas que NO mueven caja */}
                   {(m.afecta_saldo === 0 || m.afecta_saldo === false) && (
                     <span className="src-badge" style={{ background: '#E0E7FF', color: '#3730A3', marginLeft: 4 }}
                       title="Este gasto fue descontado del efectivo entregado por el vendedor — queda registrado pero NO mueve el saldo de la caja">

@@ -1,5 +1,5 @@
 // capture.jsx — Modal de captura rápida + detallada
-const CaptureModal = ({ open, onClose, cats, groups = [], onSave, initialTipo = 'INGRESO', editing = null, addCategory }) => {
+const CaptureModal = ({ open, onClose, cats, groups = [], cajas = [], saldoCaja, user, misCajas = [], onSave, initialTipo = 'INGRESO', initialCajaId = null, editing = null, addCategory }) => {
   const [mode, setMode] = useState('rapido'); // rapido | detallado
   const [tipo, setTipo] = useState(initialTipo);
   const [grupoId, setGrupoId] = useState('');
@@ -8,26 +8,46 @@ const CaptureModal = ({ open, onClose, cats, groups = [], onSave, initialTipo = 
   const [monto, setMonto] = useState('');
   const [fecha, setFecha] = useState(todayISO());
   const [metodo, setMetodo] = useState('EFECTIVO');
-  const [caja, setCaja] = useState('PRINCIPAL');
+  const [cajaId, setCajaId] = useState('');
   const [usuario, setUsuario] = useState('');
   const [notas, setNotas] = useState('');
   const [showNewCat, setShowNewCat] = useState(false);
   const [newCatName, setNewCatName] = useState('');
   const [newCatIcon, setNewCatIcon] = useState('💰');
 
+  // Filtrar cajas según rol y permisos por caja
+  const userCanUseCaja = (cajaId) => {
+    if (!user) return true;
+    if (user.rol === 'admin' || user.rol === 'gerente') return true;
+    if (!misCajas || misCajas.length === 0) return true; // sin restricciones
+    return misCajas.includes(cajaId);
+  };
+  const cajasActivas = cajas
+    .filter(c => !c.deleted && !c.archivada && userCanUseCaja(c.id))
+    .sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0));
+  const cajaSeleccionada = cajas.find(c => c.id === cajaId);
+
+  // Auto-seleccionar método según tipo de caja al cambiar caja
+  useEffect(() => {
+    if (!cajaSeleccionada) return;
+    if (cajaSeleccionada.tipo === 'EFECTIVO' && metodo !== 'EFECTIVO') setMetodo('EFECTIVO');
+    if (cajaSeleccionada.tipo === 'BANCO' && metodo === 'EFECTIVO') setMetodo('TRANSFERENCIA');
+    if (cajaSeleccionada.tipo === 'CREDITO') setMetodo('TARJETA');
+    // eslint-disable-next-line
+  }, [cajaId]);
+
   useEffect(() => {
     if (open) {
       if (editing) {
         setTipo(editing.tipo);
         setCategoria(editing.categoria);
-        // Recuperar el grupo a partir de la categoría
         const cat = cats.find(c => c.nombre === editing.categoria && c.tipo === editing.tipo);
         setGrupoId(cat?.group_id || '');
         setConcepto(editing.concepto || '');
         setMonto(String(editing.monto));
         setFecha(editing.fecha);
         setMetodo(editing.metodo || 'EFECTIVO');
-        setCaja(editing.caja || 'PRINCIPAL');
+        setCajaId(editing.caja || (cajasActivas[0]?.id || ''));
         setUsuario(editing.usuario || '');
         setNotas(editing.notas || '');
         setMode('detallado');
@@ -39,13 +59,19 @@ const CaptureModal = ({ open, onClose, cats, groups = [], onSave, initialTipo = 
         setMonto('');
         setFecha(todayISO());
         setMetodo('EFECTIVO');
-        setCaja('PRINCIPAL');
-        setUsuario('');
+        // Si nos pasaron una caja preseleccionada, usarla; si no, primera activa o caja-principal
+        if (initialCajaId) {
+          setCajaId(initialCajaId);
+        } else {
+          const principal = cajasActivas.find(c => c.id === 'caja-principal');
+          setCajaId(principal?.id || cajasActivas[0]?.id || '');
+        }
+        setUsuario(user?.nombre || '');
         setNotas('');
         setMode('rapido');
       }
     }
-  }, [open, initialTipo, editing]);
+  }, [open, initialTipo, initialCajaId, editing]);
 
   const groupsByTipo = groups
     .filter(g => g.tipo === tipo && !g.deleted)
@@ -53,14 +79,30 @@ const CaptureModal = ({ open, onClose, cats, groups = [], onSave, initialTipo = 
   const filtered = cats.filter(c => c.tipo === tipo && (!grupoId || c.group_id === grupoId));
 
   const handleSave = () => {
+    if (!cajaId) return alert('Selecciona una caja/cuenta');
     if (!categoria) return alert('Elige una categoría');
     if (!monto || parseFloat(monto) <= 0) return alert('Ingresa un monto válido');
+
+    const m = parseFloat(monto);
+    // Validación de saldo si es GASTO y la caja no permite negativo
+    if (tipo === 'GASTO' && cajaSeleccionada && !cajaSeleccionada.permite_negativo && saldoCaja) {
+      const saldoActual = saldoCaja(cajaId);
+      // Si está editando, sumar el monto viejo (porque ya estaba descontado)
+      const ajuste = (editing && editing.tipo === 'GASTO' && editing.caja === cajaId) ? editing.monto : 0;
+      const saldoEfectivo = saldoActual + ajuste;
+      if (saldoEfectivo - m < 0) {
+        if (!confirm(`⚠️ Saldo insuficiente en ${cajaSeleccionada.nombre}\n\nDisponible: $${saldoEfectivo.toFixed(2)}\nQuieres gastar: $${m.toFixed(2)}\n\nLa caja no permite saldo negativo.\n\n¿Continuar de todas formas?`)) {
+          return;
+        }
+      }
+    }
+
     const mov = {
       id: editing?.id || ('m' + Date.now() + Math.floor(Math.random() * 999)),
       fecha, tipo, categoria,
       concepto: concepto || categoria,
-      monto: parseFloat(monto),
-      metodo, caja, usuario, notas,
+      monto: m,
+      metodo, caja: cajaId, usuario, notas,
       src: editing?.src || 'manual'
     };
     onSave(mov);
@@ -85,6 +127,22 @@ const CaptureModal = ({ open, onClose, cats, groups = [], onSave, initialTipo = 
   };
 
   if (!open) return null;
+  if (user && user.rol === 'consulta') {
+    return (
+      <div className="modal-backdrop" onClick={onClose}>
+        <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 380 }}>
+          <header className="capture-head">
+            <h3 style={{ margin: 0 }}>SOLO LECTURA</h3>
+            <button className="modal-close" onClick={onClose}>×</button>
+          </header>
+          <div style={{ padding: 24, textAlign: 'center' }}>
+            <div style={{ fontSize: 36, marginBottom: 8 }}>👁️</div>
+            <p>Tu rol <strong>CONSULTA</strong> no permite capturar movimientos. Solo puedes ver información.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -96,6 +154,33 @@ const CaptureModal = ({ open, onClose, cats, groups = [], onSave, initialTipo = 
           </div>
           <button className="modal-close" onClick={onClose}>×</button>
         </header>
+
+        {/* Selector de Caja/Cuenta */}
+        <div className="field" style={{ marginTop: 8 }}>
+          <div className="field-label">
+            <span>CAJA / CUENTA</span>
+            {cajaSeleccionada && saldoCaja && (
+              <span className="mono" style={{ fontSize: 11, opacity: 0.7 }}>
+                Saldo: {fmtMXN(saldoCaja(cajaId))}
+              </span>
+            )}
+          </div>
+          {cajasActivas.length === 0 ? (
+            <div style={{ padding: '10px 12px', background: 'var(--bg-2, #fff8f0)', border: '1px dashed var(--ink-soft, #ccc)', borderRadius: 8, fontSize: 13, opacity: 0.85 }}>
+              No hay cajas. Pídele al admin que cree al menos una en el menú "Cajas".
+            </div>
+          ) : (
+            <select className="text-input" value={cajaId} onChange={e => setCajaId(e.target.value)}>
+              <option value="">— Selecciona caja —</option>
+              {cajasActivas.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.icon || (c.tipo === 'EFECTIVO' ? '💵' : c.tipo === 'BANCO' ? '🏦' : '💳')} {c.nombre}
+                  {c.banco && ` · ${c.banco}`}{c.numero && ` ····${c.numero}`}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
 
         {/* Tipo toggle */}
         <div className="tipo-toggle">
@@ -117,13 +202,16 @@ const CaptureModal = ({ open, onClose, cats, groups = [], onSave, initialTipo = 
         <div className="amount-input-wrap">
           <span className="currency-tag">MXN $</span>
           <input
-            type="number"
+            type="text"
             inputMode="decimal"
+            pattern="[0-9]*[.,]?[0-9]*"
             placeholder="0.00"
             value={monto}
-            onChange={e => setMonto(e.target.value)}
+            onChange={e => setMonto(e.target.value.replace(/[^\d.]/g, '').replace(/(\..*)\./g, '$1'))}
             className="amount-input mono"
-            autoFocus
+            autoFocus={mode !== 'rapido'}
+            autoComplete="off"
+            enterKeyHint="done"
           />
         </div>
 
@@ -251,12 +339,14 @@ const CaptureModal = ({ open, onClose, cats, groups = [], onSave, initialTipo = 
             </div>
             <div className="field-row">
               <div className="field">
-                <div className="field-label"><span>CAJA</span></div>
-                <input value={caja} onChange={e => setCaja(e.target.value.toUpperCase())} className="text-input" />
-              </div>
-              <div className="field">
-                <div className="field-label"><span>USUARIO</span></div>
-                <input value={usuario} onChange={e => setUsuario(e.target.value)} placeholder="Quien captura" className="text-input" />
+                <div className="field-label"><span>USUARIO (quien captura)</span></div>
+                <input
+                  value={usuario}
+                  onChange={e => setUsuario(e.target.value)}
+                  placeholder={user?.nombre || 'Quien captura'}
+                  className="text-input"
+                  title="Auto-rellenado con tu nombre de usuario. Puedes cambiarlo si capturas a nombre de otra persona."
+                />
               </div>
             </div>
             <div className="field">

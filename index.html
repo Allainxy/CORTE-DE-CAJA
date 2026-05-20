@@ -11,39 +11,91 @@
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="styles.css" />
-<!-- Backend en el mismo dominio bajo /api (ver nginx.conf). Vacíalo si quieres solo modo offline local. -->
+<link rel="stylesheet" href="styles.css?v=2026-05-12g" />
 <meta name="api-url" content="https://corte.kbomx.com" />
+<meta name="app-version" content="2026-05-12g" />
 </head>
 <body>
 <div id="root"></div>
 
+<div id="kbot-update-banner" style="display:none;position:fixed;bottom:16px;left:16px;right:16px;max-width:420px;margin:0 auto;background:#1F2937;color:#fff;padding:14px 16px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.25);z-index:9999;display:none;align-items:center;gap:12px;font-family:Inter,sans-serif">
+  <div style="flex:1">
+    <div style="font-weight:700;font-size:13px">🚀 Hay una versión nueva</div>
+    <div style="font-size:11px;opacity:0.7;margin-top:2px">Recarga para obtener las últimas funciones</div>
+  </div>
+  <button id="kbot-update-btn" style="background:#E63946;color:#fff;border:none;padding:8px 14px;border-radius:6px;font-weight:700;cursor:pointer;font-size:12px">RECARGAR</button>
+</div>
+
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
-<!-- SheetJS para exportar a Excel (.xlsx) -->
-<script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+<script src="db.js?v=2026-05-12g"></script>
+<script src="xml.js?v=2026-05-12g"></script>
+<script src="seed.js?v=2026-05-12g"></script>
+<script src="api.js?v=2026-05-12g"></script>
 
-<script src="db.js"></script>
-<script src="xml.js"></script>
-<script src="seed.js"></script>
-<script src="api.js"></script>
-
-<script type="text/babel" src="tweaks-panel.jsx"></script>
-<script type="text/babel" src="app-shell.jsx"></script>
-<script type="text/babel" src="login.jsx"></script>
-<script type="text/babel" src="capture.jsx"></script>
-<script type="text/babel" src="dashboard.jsx"></script>
-<script type="text/babel" src="movs-list.jsx"></script>
-<script type="text/babel" src="reports.jsx"></script>
-<script type="text/babel" src="xml-view.jsx"></script>
-<script type="text/babel" src="app.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx?v=2026-05-12g"></script>
+<script type="text/babel" src="app-shell.jsx?v=2026-05-12T"></script>
+<script type="text/babel" src="login.jsx?v=2026-05-12g"></script>
+<script type="text/babel" src="capture.jsx?v=2026-05-12g"></script>
+<script type="text/babel" src="dashboard.jsx?v=2026-05-12g"></script>
+<script type="text/babel" src="movs-list.jsx?v=2026-05-12g"></script>
+<script type="text/babel" src="reports.jsx?v=2026-05-12g"></script>
+<script type="text/babel" src="xml-view.jsx?v=2026-05-12g"></script>
+<script type="text/babel" src="cajas-view.jsx?v=2026-05-12g"></script>
+<script type="text/babel" src="users-view.jsx?v=2026-05-12g"></script>
+<script type="text/babel" src="import-export-view.jsx?v=2026-05-12g"></script>
+<script type="text/babel" src="arqueo-view.jsx?v=2026-05-12g"></script>
+<script type="text/babel" src="cxp-view.jsx?v=2026-05-12g"></script>
+<script type="text/babel" src="compras-view.jsx?v=2026-05-12P"></script>
+    <script type="text/babel" src="ventas-view.jsx?v=2026-05-15v"></script>
+    <script type="text/babel" src="viaticos-view.jsx?v=2026-05-12g"></script>
+    <script type="text/babel" src="backup-view.jsx?v=2026-05-12g"></script>
+    <script type="text/babel" src="comisiones-mensuales-tab.jsx?v=2026-05-12k"></script><!-- MNV1_INDEX_INJECTED -->
+    <script type="text/babel" src="nomina-view.jsx?v=2026-05-12L"></script>
+<script type="text/babel" src="app.jsx?v=2026-05-12g"></script>
 
 <script>
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('sw.js').catch(() => {});
+    window.addEventListener('load', async () => {
+      try {
+        const reg = await navigator.serviceWorker.register('sw.js?v=2026-05-12g');
+        function showUpdateBanner(worker) {
+          const banner = document.getElementById('kbot-update-banner');
+          const btn = document.getElementById('kbot-update-btn');
+          if (!banner || !btn) return;
+          banner.style.display = 'flex';
+          btn.onclick = () => {
+            btn.textContent = 'CARGANDO...';
+            btn.disabled = true;
+            worker.postMessage({ action: 'skipWaiting' });
+          };
+        }
+        if (reg.waiting) showUpdateBanner(reg.waiting);
+        reg.addEventListener('updatefound', () => {
+          const newWorker = reg.installing;
+          if (!newWorker) return;
+          newWorker.addEventListener('statechange', () => {
+            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+              showUpdateBanner(newWorker);
+            }
+          });
+        });
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          if (refreshing) return;
+          refreshing = true;
+          window.location.reload();
+        });
+        setInterval(() => reg.update().catch(() => {}), 30 * 60 * 1000);
+        document.addEventListener('visibilitychange', () => {
+          if (!document.hidden) reg.update().catch(() => {});
+        });
+      } catch (e) {
+        console.warn('SW register failed:', e);
+      }
     });
   }
 </script>

@@ -1,5 +1,5 @@
 // dashboard.jsx — Vista principal con resumen del día
-const DashboardView = ({ movs, cats, setActive, openCapture }) => {
+const DashboardView = ({ movs, cats, cajas = [], saldoCaja, setFilterCaja, setActive, openCapture }) => {
   const today = todayISO();
 
   const summary = useMemo(() => {
@@ -16,7 +16,7 @@ const DashboardView = ({ movs, cats, setActive, openCapture }) => {
     // Mes anterior comparativo
     const prev = new Date(today + 'T12:00:00');
     prev.setMonth(prev.getMonth() - 1);
-    const pmk = prev.toISOString().slice(0, 7);
+    const pmk = toLocalMonth(prev);
     const prevMovs = movs.filter(m => monthKey(m.fecha) === pmk);
     const ingPrev = prevMovs.filter(m => m.tipo === 'INGRESO').reduce((s, m) => s + m.monto, 0);
     const gasPrev = prevMovs.filter(m => m.tipo === 'GASTO').reduce((s, m) => s + m.monto, 0);
@@ -37,13 +37,31 @@ const DashboardView = ({ movs, cats, setActive, openCapture }) => {
     for (let i = 13; i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
-      const iso = d.toISOString().slice(0, 10);
+      const iso = toLocalISO(d);
       const ing = movs.filter(m => m.fecha === iso && m.tipo === 'INGRESO').reduce((s, m) => s + m.monto, 0);
       const gas = movs.filter(m => m.fecha === iso && m.tipo === 'GASTO').reduce((s, m) => s + m.monto, 0);
       days.push({ iso, ing, gas, neto: ing - gas });
     }
     return days;
   }, [movs]);
+
+  // Saldos por caja activa
+  const cajasResumen = useMemo(() => {
+    const activas = (cajas || [])
+      .filter(c => !c.deleted && !c.archivada)
+      .sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0) || (a.nombre || '').localeCompare(b.nombre || ''));
+    const items = activas.map(c => ({
+      ...c,
+      saldo: saldoCaja ? saldoCaja(c.id) : 0
+    }));
+    const total = items.reduce((s, c) => s + (c.saldo || 0), 0);
+    return { items, total };
+  }, [cajas, saldoCaja, movs]);
+
+  const goToCaja = (cajaId) => {
+    if (setFilterCaja) setFilterCaja(cajaId);
+    if (setActive) setActive('movs');
+  };
 
   // Top categorías del mes
   const topCats = useMemo(() => {
@@ -84,6 +102,92 @@ const DashboardView = ({ movs, cats, setActive, openCapture }) => {
           </button>
         </div>
       </header>
+
+      {/* BANNER RESUMEN DEL DÍA — solo si hay actividad */}
+      {summary.todayMovs.length > 0 && (
+        <BotanaCard style={{ padding: 14, marginBottom: 12, background: 'linear-gradient(135deg, var(--ink, #1F2937) 0%, #374151 100%)', color: '#fff', border: 'none' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+            <div style={{ fontSize: 11, opacity: 0.85, letterSpacing: 1, fontWeight: 700 }}>
+              📅 RESUMEN DE HOY · {summary.todayMovs.length} mov{summary.todayMovs.length !== 1 ? 's' : ''}
+            </div>
+            <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', alignItems: 'center' }}>
+              <div>
+                <div style={{ fontSize: 10, opacity: 0.7 }}>INGRESOS</div>
+                <div className="mono" style={{ fontSize: 16, fontWeight: 800, color: 'var(--green, #2EC27E)' }}>{fmtMXN(summary.ingHoy)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, opacity: 0.7 }}>GASTOS</div>
+                <div className="mono" style={{ fontSize: 16, fontWeight: 800, color: '#FF8B7A' }}>{fmtMXN(summary.gasHoy)}</div>
+              </div>
+              <div style={{ borderLeft: '1px solid rgba(255,255,255,0.2)', paddingLeft: 18 }}>
+                <div style={{ fontSize: 10, opacity: 0.7 }}>NETO DEL DÍA</div>
+                <div className="mono" style={{ fontSize: 20, fontWeight: 800, color: summary.netoHoy >= 0 ? 'var(--green, #2EC27E)' : '#FF8B7A' }}>
+                  {summary.netoHoy >= 0 ? '+' : ''}{fmtMXN(summary.netoHoy)}
+                </div>
+              </div>
+            </div>
+          </div>
+        </BotanaCard>
+      )}
+
+      {/* PANEL DE CAJAS — Saldos en vivo */}
+      {cajasResumen.items.length > 0 && (
+        <div className="cajas-panel" style={{ marginBottom: 16 }}>
+          {/* TOTAL GRANDE */}
+          <BotanaCard accent="var(--primary)" style={{ padding: 18, marginBottom: 10 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 11, opacity: 0.65, letterSpacing: 1, fontWeight: 600 }}>SALDO TOTAL EN CAJA</div>
+                <div className="mono" style={{ fontSize: 32, fontWeight: 800, lineHeight: 1.1, color: cajasResumen.total >= 0 ? 'var(--green, #2EC27E)' : 'var(--red, #E63946)' }}>
+                  {fmtMXN(cajasResumen.total)}
+                </div>
+                <div style={{ fontSize: 11, opacity: 0.6, marginTop: 2 }}>
+                  {cajasResumen.items.length} caja{cajasResumen.items.length !== 1 ? 's' : ''} activa{cajasResumen.items.length !== 1 ? 's' : ''} · todas las monedas en MXN
+                </div>
+              </div>
+              <button className="btn-ghost" onClick={() => setActive && setActive('cajas')} style={{ fontSize: 12 }}>
+                ADMINISTRAR CAJAS →
+              </button>
+            </div>
+          </BotanaCard>
+
+          {/* CARDS POR CAJA */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 8 }}>
+            {cajasResumen.items.map(c => {
+              const tipoIcon = c.icon || (c.tipo === 'EFECTIVO' ? '💵' : c.tipo === 'BANCO' ? '🏦' : '💳');
+              const tipoColor = c.color || (c.tipo === 'EFECTIVO' ? '#2EC27E' : c.tipo === 'BANCO' ? '#3B82F6' : '#FF6B35');
+              const negativo = c.saldo < 0;
+              return (
+                <BotanaCard
+                  key={c.id}
+                  accent={tipoColor}
+                  className="caja-mini"
+                  style={{ padding: 12, cursor: 'pointer', transition: 'transform 0.15s' }}
+                  onClick={() => goToCaja(c.id)}
+                  onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-2px)'}
+                  onMouseLeave={e => e.currentTarget.style.transform = 'translateY(0)'}
+                  title={`Ver movimientos de ${c.nombre}`}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, minWidth: 0 }}>
+                    <span style={{ fontSize: 18 }}>{tipoIcon}</span>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontWeight: 700, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {c.nombre}
+                      </div>
+                      <div style={{ fontSize: 9, opacity: 0.55, letterSpacing: 0.4 }}>
+                        {c.tipo}{c.banco && ` · ${c.banco}`}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mono" style={{ fontSize: 17, fontWeight: 800, color: negativo ? 'var(--red, #E63946)' : tipoColor }}>
+                    {fmtMXN(c.saldo)}
+                  </div>
+                </BotanaCard>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* KPI ROW */}
       <div className="kpi-grid">
