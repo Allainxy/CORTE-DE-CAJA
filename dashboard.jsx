@@ -2,10 +2,17 @@
 const DashboardView = ({ movs, cats, cajas = [], saldoCaja, setFilterCaja, setActive, openCapture }) => {
   const today = todayISO();
 
+  // afecta_saldo=0 → movimiento informativo que NO mueve caja (ej. gastos de
+  // ruta ya descontados de la venta del vendedor). undefined/1 → sí mueve caja.
+  const mueveCaja = (m) => (m.afecta_saldo === undefined || m.afecta_saldo === null || Number(m.afecta_saldo) === 1);
+
   const summary = useMemo(() => {
     const todayMovs = movs.filter(m => m.fecha === today);
     const ingHoy = todayMovs.filter(m => m.tipo === 'INGRESO').reduce((s, m) => s + m.monto, 0);
     const gasHoy = todayMovs.filter(m => m.tipo === 'GASTO').reduce((s, m) => s + m.monto, 0);
+    // Versión "que mueve caja" (excluye gastos/ingresos con afecta_saldo=0)
+    const ingHoyCaja = todayMovs.filter(m => m.tipo === 'INGRESO' && mueveCaja(m)).reduce((s, m) => s + m.monto, 0);
+    const gasHoyCaja = todayMovs.filter(m => m.tipo === 'GASTO' && mueveCaja(m)).reduce((s, m) => s + m.monto, 0);
 
     // Mes en curso
     const mk = monthKey(today);
@@ -24,6 +31,8 @@ const DashboardView = ({ movs, cats, cajas = [], saldoCaja, setFilterCaja, setAc
     return {
       todayMovs,
       ingHoy, gasHoy, netoHoy: ingHoy - gasHoy,
+      // que mueven caja (flujo real)
+      ingHoyCaja, gasHoyCaja, netoHoyCaja: ingHoyCaja - gasHoyCaja,
       ingMes, gasMes, netoMes: ingMes - gasMes,
       ingPrev, gasPrev,
       ingDelta: ingPrev ? ((ingMes - ingPrev) / ingPrev * 100) : 0,
@@ -118,12 +127,18 @@ const DashboardView = ({ movs, cats, cajas = [], saldoCaja, setFilterCaja, setAc
               <div>
                 <div style={{ fontSize: 10, opacity: 0.7 }}>GASTOS</div>
                 <div className="mono" style={{ fontSize: 16, fontWeight: 800, color: '#FF8B7A' }}>{fmtMXN(summary.gasHoy)}</div>
+                {summary.gasHoy !== summary.gasHoyCaja && (
+                  <div style={{ fontSize: 9, opacity: 0.6, marginTop: 1 }}>mueve caja: {fmtMXN(summary.gasHoyCaja)}</div>
+                )}
               </div>
               <div style={{ borderLeft: '1px solid rgba(255,255,255,0.2)', paddingLeft: 18 }}>
                 <div style={{ fontSize: 10, opacity: 0.7 }}>NETO DEL DÍA</div>
                 <div className="mono" style={{ fontSize: 20, fontWeight: 800, color: summary.netoHoy >= 0 ? 'var(--green, #2EC27E)' : '#FF8B7A' }}>
                   {summary.netoHoy >= 0 ? '+' : ''}{fmtMXN(summary.netoHoy)}
                 </div>
+                {summary.netoHoy !== summary.netoHoyCaja && (
+                  <div style={{ fontSize: 9, opacity: 0.6, marginTop: 1 }}>flujo caja: {summary.netoHoyCaja >= 0 ? '+' : ''}{fmtMXN(summary.netoHoyCaja)}</div>
+                )}
               </div>
             </div>
           </div>
@@ -199,12 +214,26 @@ const DashboardView = ({ movs, cats, cajas = [], saldoCaja, setFilterCaja, setAc
         <BotanaCard className="kpi kpi-gas" accent="var(--red)">
           <div className="kpi-label">GASTOS HOY</div>
           <div className="kpi-value mono">{fmtMXN(summary.gasHoy)}</div>
-          <div className="kpi-sub">{summary.todayMovs.filter(m => m.tipo === 'GASTO').length} movimientos</div>
+          <div className="kpi-sub">
+            {summary.todayMovs.filter(m => m.tipo === 'GASTO').length} movimientos
+            {summary.gasHoy !== summary.gasHoyCaja && (
+              <span style={{ display: 'block', opacity: 0.7, fontSize: '0.85em', marginTop: 2 }}>
+                mueve caja: {fmtMXN(summary.gasHoyCaja)}
+              </span>
+            )}
+          </div>
         </BotanaCard>
         <BotanaCard className={'kpi kpi-net ' + (summary.netoHoy >= 0 ? 'pos' : 'neg')} accent="var(--ink)">
           <div className="kpi-label">NETO HOY</div>
           <div className="kpi-value mono">{summary.netoHoy >= 0 ? '+' : ''}{fmtMXN(summary.netoHoy)}</div>
-          <div className="kpi-sub">{summary.netoHoy >= 0 ? 'GANANCIA' : 'PÉRDIDA'} EN CAJA</div>
+          <div className="kpi-sub">
+            {summary.netoHoy >= 0 ? 'GANANCIA' : 'PÉRDIDA'} EN CAJA
+            {summary.netoHoy !== summary.netoHoyCaja && (
+              <span style={{ display: 'block', opacity: 0.7, fontSize: '0.85em', marginTop: 2 }}>
+                flujo caja: {summary.netoHoyCaja >= 0 ? '+' : ''}{fmtMXN(summary.netoHoyCaja)}
+              </span>
+            )}
+          </div>
         </BotanaCard>
         <BotanaCard className="kpi kpi-mes" accent="var(--yellow)">
           <div className="kpi-label">NETO DEL MES</div>
