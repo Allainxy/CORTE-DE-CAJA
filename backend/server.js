@@ -16,6 +16,15 @@ const db = new Database(DB_FILE);
 db.pragma('journal_mode = WAL');
 
 // ---------- Migraciones automáticas (idempotentes) ----------
+// 0) Tabla app_settings (configuración global clave-valor; p.ej. clasificación
+//    de categorías del Reporte Financiero). Compartida por todos los usuarios.
+db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT
+)`);
+
 // 1) Tabla groups (jerarquía contable)
 db.exec(`CREATE TABLE IF NOT EXISTS groups (
   id TEXT PRIMARY KEY,
@@ -5776,6 +5785,33 @@ mountNominaPagosIndividuales(app, db, { requireAuth: auth, log: console.log, aud
 // const mountVentasCierresDia = require("./ventas-cierres-dia");  ← movido
 // mountVentasCierresDia(app, db, { ... });                         ← movido
 // const _f4_isDiaCerrado = require("./ventas-cierres-dia").isDiaCerrado;  ← movido
+
+// ============================================================================
+// AJUSTES GLOBALES (app_settings) — configuración compartida clave-valor
+// Usado por el Reporte Financiero para clasificar categorías en secciones
+// (Ingresos / Costo de venta / Gastos / Transferencias).
+// ============================================================================
+// GET: cualquier usuario autenticado puede leer (necesario para ver el reporte)
+app.get('/api/settings/:key', auth, (req, res) => {
+  const row = db.prepare('SELECT key, value, updated_at, updated_by FROM app_settings WHERE key = ?').get(req.params.key);
+  if (!row) return res.json({ key: req.params.key, value: null, updated_at: null });
+  let parsed = row.value;
+  try { parsed = JSON.parse(row.value); } catch (e) { /* dejar como texto */ }
+  res.json({ key: row.key, value: parsed, updated_at: row.updated_at, updated_by: row.updated_by });
+});
+
+// PUT: solo admin/gerente puede cambiar la configuración global
+app.put('/api/settings/:key', auth, requireRole(['admin', 'gerente']), (req, res) => {
+  const key = req.params.key;
+  if (!key) return res.status(400).json({ error: 'key requerida' });
+  let value = req.body && Object.prototype.hasOwnProperty.call(req.body, 'value') ? req.body.value : req.body;
+  const valueStr = typeof value === 'string' ? value : JSON.stringify(value);
+  const now = Date.now();
+  db.prepare(`INSERT INTO app_settings (key, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
+    .run(key, valueStr, now, req.user?.nombre || req.user?.id || null);
+  res.json({ ok: true, key, updated_at: now });
+});
 
 app.listen(PORT, () => {
   console.log(`🌶️  K-BOTANAS API corriendo en http://localhost:${PORT}`);

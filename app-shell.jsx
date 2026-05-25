@@ -386,6 +386,7 @@ const NAV = [
   { id: 'nomina', label: 'Nómina', icon: 'people-pay' },
   { id: 'arqueo', label: 'Arqueo', icon: 'scale' },
   { id: 'reportes', label: 'Reportes', icon: 'chart' },
+  { id: 'finrep', label: 'Reporte Financiero', icon: 'chart' },
   { id: 'categorias', label: 'Categorías', icon: 'tag' },
   { id: 'usuarios', label: 'Usuarios', icon: 'users', adminOnly: true },
   { id: 'importar', label: 'Importar/Exportar', icon: 'database', adminOnly: true },

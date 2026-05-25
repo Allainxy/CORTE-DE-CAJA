@@ -157,6 +157,14 @@ window.KBotAPI = (function () {
     return req('/api/users/' + id + '/cajas', { method: 'PUT', body: JSON.stringify({ cajas }) }); // → { ok }
   }
 
+  // ── Ajustes globales (app_settings) — usado por el Reporte Financiero ───────
+  function getSetting(key) {
+    return req('/api/settings/' + encodeURIComponent(key));   // → { key, value, updated_at }
+  }
+  function setSetting(key, value) {                            // → { ok, key, updated_at }
+    return req('/api/settings/' + encodeURIComponent(key), { method: 'PUT', body: JSON.stringify({ value }) });
+  }
+
   window.addEventListener('online', () => flushQueue());
 
   return {
@@ -165,6 +173,7 @@ window.KBotAPI = (function () {
     syncCat, deleteCat, updateCat, syncGroup, deleteGroup, updateGroup,
     reorderGroups, syncBudget, bulkMovs,
     listUsers, createUser, updateUser, deleteUser, resetPassword, generatePin, setUserCajas,
+    getSetting, setSetting,
     flushQueue, queueGet
   };
 })();
