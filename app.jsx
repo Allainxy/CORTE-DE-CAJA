@@ -447,6 +447,7 @@ function App() {
           cajas={cajas} filterCaja={filterCaja} setFilterCaja={setFilterCaja} />
         {active === 'dashboard' && <DashboardView movs={filteredMovs} cats={cats} cajas={cajas} saldoCaja={saldoCaja} setFilterCaja={setFilterCaja} setActive={setActive} openCapture={openCapture} />}
         {active === 'movs' && <MovsListView movs={filteredMovs} cats={cats} cajas={cajas} onEdit={editMov} onDelete={deleteMov} user={user} />}
+        {active === 'diario' && <DailyView movs={filteredMovs} cats={cats} cajas={cajas} />}
         {active === 'cajas' && <CajasView cajas={cajas} movs={movs} user={user} saldoCaja={saldoCaja}
           addCaja={addCaja} updateCaja={updateCaja} archivarCaja={archivarCaja} deleteCaja={deleteCaja}
           onTransferClick={() => setTransferOpen(true)} setFilterCaja={setFilterCaja} setActive={setActive} openCapture={openCapture} />}

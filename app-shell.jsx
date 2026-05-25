@@ -377,6 +377,7 @@ const NAV = [
   { id: 'dashboard', label: 'Caja del día', icon: 'home' },
   { id: 'capturar', label: 'Capturar', icon: 'plus' },
   { id: 'movs', label: 'Movimientos', icon: 'list' },
+  { id: 'diario', label: 'Resumen por día', icon: 'calendar' },
   { id: 'cajas', label: 'Cajas', icon: 'wallet' },
   { id: 'cxp', label: 'Por Pagar/Cobrar', icon: 'credit' },
   { id: 'compras', label: 'Compras', icon: 'truck' },
@@ -402,6 +403,7 @@ function NavIcon({ name }) {
     case 'tag': return <svg {...common} viewBox="0 0 24 24"><path d="M3 12V3h9l9 9-9 9-9-9z" /><circle cx="7.5" cy="7.5" r="1.2" fill="currentColor" /></svg>;
     case 'users': return <svg {...common} viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5" /><path d="M2.5 20c0-3.5 3-6 6.5-6s6.5 2.5 6.5 6" /><circle cx="17" cy="8.5" r="2.8" /><path d="M16 14c3 0 5.5 2 5.5 5" /></svg>;
     case 'scale': return <svg {...common} viewBox="0 0 24 24"><path d="M12 3v18" /><path d="M5 21h14" /><path d="M5 8l-3 6c0 1.7 1.3 3 3 3s3-1.3 3-3l-3-6z" /><path d="M19 8l-3 6c0 1.7 1.3 3 3 3s3-1.3 3-3l-3-6z" /><path d="M3 6h18" /></svg>;
+    case 'calendar': return <svg {...common} viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M3 9h18M8 3v4M16 3v4M7 13h4M7 17h7" /></svg>;
     case 'credit': return <svg {...common} viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="13" rx="2" /><path d="M2 11h20" /><path d="M6 16h4" /></svg>;
     case 'truck': return <svg {...common} viewBox="0 0 24 24"><rect x="1" y="6" width="13" height="11" /><path d="M14 9h5l3 4v4h-8" /><circle cx="6" cy="19" r="2" /><circle cx="18" cy="19" r="2" /></svg>;
     case 'database': return <svg {...common} viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5" /><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" /></svg>;
