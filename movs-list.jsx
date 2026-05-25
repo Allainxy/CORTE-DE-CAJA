@@ -1,4 +1,89 @@
 // movs-list.jsx — Lista de movimientos con filtros y búsqueda avanzada
+// v2026-05-24a:
+//   • Orden por TIMESTAMP real de ejecución (fecha + hora), no solo por fecha.
+//   • Hora visible en la columna FECHA + separadores por día + marca "ÚLTIMO".
+//   • Encabezado pegajoso (sticky) al hacer scroll.
+//   • Excel (XLSX) se carga BAJO DEMANDA al exportar (no en el arranque).
+
+// ── Helpers de tiempo (mejor esfuerzo, robustos a datos viejos) ──────────────
+// epoch ms a partir del id manual "m<Date.now()><rand>" (Date.now() = 13 dígitos)
+const epochFromMovId = (id) => {
+  const mm = /^m(\d{13})/.exec(String(id || ''));
+  return mm ? parseInt(mm[1], 10) : 0;
+};
+// Timestamp de ejecución: created_at → id → updated_at → fecha (12:00)
+const movTs = (m) => {
+  const c = Number(m.created_at);
+  if (c > 0) return c;
+  const e = epochFromMovId(m.id);
+  if (e > 0) return e;
+  const u = Number(m.updated_at);
+  if (u > 0) return u;
+  const f = Date.parse((m.fecha || '') + 'T12:00:00');
+  return Number.isFinite(f) ? f : 0;
+};
+const fmtTime = (ts) => {
+  if (!ts) return '';
+  try { return new Date(ts).toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' }); }
+  catch { return ''; }
+};
+
+// Inyecta una sola vez los estilos extra de esta vista (evita tocar styles.css,
+// así el deploy sigue siendo copiar solo movs-list.jsx + index.html).
+function injectMovsViewStyles() {
+  if (document.getElementById('movs-view-enhancements')) return;
+  const s = document.createElement('style');
+  s.id = 'movs-view-enhancements';
+  s.textContent = `
+    .movs-view .mt-head { position: sticky; top: 0; z-index: 6; }
+    .movs-view .mt-row { padding-top: 10px; padding-bottom: 10px; }
+    .movs-view .mt-fecha { line-height: 1.2; }
+    .movs-view .mt-fecha-d { font-weight: 700; }
+    .movs-view .mt-fecha-t { font-size: 10px; opacity: 0.6; margin-top: 1px; letter-spacing: 0.02em; }
+    .movs-view .mt-latest-tag {
+      display: inline-block; margin-top: 3px;
+      font-family: var(--f-mono); font-size: 8px; letter-spacing: 0.1em; font-weight: 700;
+      background: var(--primary); color: #fff; padding: 1px 5px; border-radius: 4px;
+    }
+    .movs-view .mt-daygroup {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding: 7px 16px;
+      background: var(--surface-2);
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .movs-view .mt-daygroup-label {
+      font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.1em; font-weight: 700;
+      color: var(--primary); text-transform: uppercase;
+    }
+    .movs-view .mt-daygroup-count { font-family: var(--f-mono); font-size: 10px; opacity: 0.5; }
+    .movs-view .mt-row--latest { background: var(--primary-soft); box-shadow: inset 3px 0 0 var(--primary); }
+    .movs-view .mt-row--latest:hover { background: var(--primary-soft); }
+    .movs-view .btn-export[disabled] { opacity: 0.6; cursor: default; }
+  `;
+  document.head.appendChild(s);
+}
+
+// Carga XLSX bajo demanda (la primera vez que se exporta). Devuelve una promesa.
+function ensureXLSX() {
+  return new Promise((resolve, reject) => {
+    if (typeof XLSX !== 'undefined') return resolve();
+    let s = document.getElementById('kbot-xlsx-cdn');
+    if (s) {
+      if (typeof XLSX !== 'undefined') return resolve();
+      s.addEventListener('load', () => resolve());
+      s.addEventListener('error', () => reject(new Error('xlsx')));
+      return;
+    }
+    s = document.createElement('script');
+    s.id = 'kbot-xlsx-cdn';
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error('xlsx'));
+    document.head.appendChild(s);
+  });
+}
+
 const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
   const [q, setQ] = useState('');
   const [tipo, setTipo] = useState('TODOS');
@@ -8,6 +93,14 @@ const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
   const [to, setTo] = useState('');
   const [sortKey, setSortKey] = useState('fecha');
   const [sortDir, setSortDir] = useState('desc');
+  const [exporting, setExporting] = useState(false);
+
+  useEffect(() => { injectMovsViewStyles(); }, []);
+
+  const yesterdayISO = useMemo(() => {
+    const d = new Date(); d.setDate(d.getDate() - 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }, []);
 
   // Mapa de caja id -> caja para mostrar nombre + ícono + color
   const cajaMap = useMemo(() => {
@@ -56,11 +149,15 @@ const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
       });
     }
     r = [...r].sort((a, b) => {
-      let va = a[sortKey], vb = b[sortKey];
-      if (sortKey === 'monto') { va = Number(va); vb = Number(vb); }
-      if (va < vb) return sortDir === 'asc' ? -1 : 1;
-      if (va > vb) return sortDir === 'asc' ? 1 : -1;
-      return 0;
+      if (sortKey === 'monto') {
+        const va = Number(a.monto), vb = Number(b.monto);
+        return sortDir === 'asc' ? va - vb : vb - va;
+      }
+      // 'fecha' → ordenar por timestamp real de ejecución (fecha + hora)
+      const va = movTs(a), vb = movTs(b);
+      if (va !== vb) return sortDir === 'asc' ? va - vb : vb - va;
+      // desempate estable
+      return String(b.id).localeCompare(String(a.id));
     });
     return r;
   }, [movs, tipo, cat, cajaFilter, from, to, q, sortKey, sortDir, cajaMap]);
@@ -76,20 +173,36 @@ const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
     else { setSortKey(k); setSortDir('desc'); }
   };
 
-  // Export a Excel (.xlsx) usando SheetJS — respeta los filtros activos
-  const exportXLSX = () => {
-    if (typeof XLSX === 'undefined') {
-      alert('Librería de Excel no cargada. Recarga la página (Ctrl+Shift+R) e intenta de nuevo.');
-      return;
-    }
+  const dayHeading = (iso) => {
+    if (iso === todayISO()) return 'HOY · ' + fmtDateLong(iso);
+    if (iso === yesterdayISO) return 'AYER · ' + fmtDateLong(iso);
+    return fmtDateLong(iso);
+  };
+
+  // Export a Excel (.xlsx) usando SheetJS (carga bajo demanda) — respeta filtros
+  const exportXLSX = async () => {
     if (filtered.length === 0) {
       alert('No hay movimientos para exportar con los filtros actuales.');
+      return;
+    }
+    setExporting(true);
+    try {
+      await ensureXLSX();
+    } catch (e) {
+      setExporting(false);
+      alert('No se pudo cargar la librería de Excel. Verifica tu conexión e intenta de nuevo.');
+      return;
+    }
+    if (typeof XLSX === 'undefined') {
+      setExporting(false);
+      alert('Librería de Excel no disponible. Recarga la página (Ctrl+Shift+R) e intenta de nuevo.');
       return;
     }
 
     // Construir filas con todas las columnas relevantes
     const data = filtered.map(m => ({
       'FECHA': m.fecha,
+      'HORA': fmtTime(movTs(m)),
       'TIPO': m.tipo,
       'CATEGORÍA': m.categoria || '',
       'CONCEPTO': m.concepto || '',
@@ -125,6 +238,7 @@ const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
     // Anchos de columna
     ws['!cols'] = [
       { wch: 12 },  // FECHA
+      { wch: 7 },   // HORA
       { wch: 9 },   // TIPO
       { wch: 22 },  // CATEGORÍA
       { wch: 35 },  // CONCEPTO
@@ -138,10 +252,10 @@ const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
       { wch: 12 }   // AFECTA SALDO
     ];
 
-    // Formato moneda en columna MONTO (I = índice 8)
+    // Formato moneda en columna MONTO (J = índice 9)
     const range = XLSX.utils.decode_range(ws['!ref']);
     for (let R = 1; R <= range.e.r; R++) {
-      const cellRef = XLSX.utils.encode_cell({ c: 8, r: R });
+      const cellRef = XLSX.utils.encode_cell({ c: 9, r: R });
       if (ws[cellRef] && typeof ws[cellRef].v === 'number') {
         ws[cellRef].z = '"$"#,##0.00;[Red]"-$"#,##0.00';
       }
@@ -153,6 +267,101 @@ const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
     const ts = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '');
     const fname = `movimientos_${ts}.xlsx`;
     XLSX.writeFile(wb, fname);
+    setExporting(false);
+  };
+
+  // Conteo por día para los separadores (solo cuando se ordena por fecha)
+  const grouped = sortKey === 'fecha';
+  const showLatest = grouped && sortDir === 'desc';
+  const visible = filtered.slice(0, 200);
+  const dayCounts = useMemo(() => {
+    const m = {};
+    visible.forEach(x => { m[x.fecha] = (m[x.fecha] || 0) + 1; });
+    return m;
+  }, [filtered, sortKey, sortDir]);
+
+  const renderRow = (m, isLatest) => {
+    const c = cats.find(x => x.nombre === m.categoria);
+    const cajaInfo = getCajaInfo(m.caja);
+    const prov = getProveedor(m);
+    const hora = fmtTime(movTs(m));
+    return (
+      <div key={m.id} className={'mt-row' + (isLatest ? ' mt-row--latest' : '')}>
+        <div className="mono mt-fecha">
+          <div className="mt-fecha-d">{fmtDate(m.fecha)}</div>
+          {hora && <div className="mt-fecha-t">{hora}</div>}
+          {isLatest && <span className="mt-latest-tag">ÚLTIMO</span>}
+        </div>
+        <div><span className={'tipo-tag ' + (m.tipo === 'INGRESO' ? 'ing' : 'gas')}>{m.tipo === 'INGRESO' ? '+' : '−'}</span></div>
+        <div className="cat-cell">
+          <span className="cat-dot" style={{ background: c?.color || '#888' }}>{c?.icon || '•'}</span>
+          <span>{m.categoria}</span>
+        </div>
+        <div className="concept-cell">
+          <div>{m.concepto || '—'}</div>
+          {prov && (
+            <div className="prov-line" style={{ fontSize: 11, opacity: 0.7, marginTop: 2 }}>
+              🏢 {prov}
+            </div>
+          )}
+          {m.src === 'xml' && <span className="src-badge">XML</span>}
+          {m.cxp_id && <span className="src-badge" style={{ background: '#FFD166', color: '#1F2937' }}>CxP</span>}
+          {(m.afecta_saldo === 0 || m.afecta_saldo === false) && (
+            <span className="src-badge" style={{ background: '#E0E7FF', color: '#3730A3', marginLeft: 4 }}
+              title="Este gasto fue descontado del efectivo entregado por el vendedor — queda registrado pero NO mueve el saldo de la caja">
+              no afecta saldo
+            </span>
+          )}
+        </div>
+        <div className="caja-cell">
+          <span className="caja-dot" style={{ background: cajaInfo.color + '22', color: cajaInfo.color, padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <span>{cajaInfo.icon}</span>
+            <span>{cajaInfo.nombre}</span>
+          </span>
+        </div>
+        <div>{m.usuario || '—'}</div>
+        <div className={'ar mono amount-cell ' + (m.tipo === 'INGRESO' ? 'pos' : 'neg')}>
+          {m.tipo === 'INGRESO' ? '+' : '−'}{fmtMXN(m.monto)}
+        </div>
+        <div className="actions-cell">
+          {(() => {
+            if (!user) return null;
+            const rol = user.rol;
+            if (rol === 'consulta') return null;
+            // editar: usuario edita propios; admin/gerente edita todo
+            const canEdit = (rol === 'admin' || rol === 'gerente') ||
+              (rol === 'usuario' && (m.user_id === user.id || m.usuario === user.nombre));
+            // borrar: solo admin y gerente, con PIN (lo maneja el handler)
+            const canDelete = rol === 'admin' || rol === 'gerente';
+            return (
+              <>
+                {canEdit && <button className="ic-btn" onClick={() => onEdit(m)} title="Editar">✎</button>}
+                {canDelete && <button className="ic-btn danger" onClick={() => onDelete(m.id)} title="Eliminar (requiere PIN)">🗑</button>}
+              </>
+            );
+          })()}
+        </div>
+      </div>
+    );
+  };
+
+  // Construye filas + separadores de día (solo agrupa cuando se ordena por fecha)
+  const buildRows = () => {
+    const els = [];
+    let lastDay = null;
+    visible.forEach((m, idx) => {
+      if (grouped && m.fecha !== lastDay) {
+        lastDay = m.fecha;
+        els.push(
+          <div key={'g-' + m.fecha + '-' + idx} className="mt-daygroup">
+            <span className="mt-daygroup-label">{dayHeading(m.fecha)}</span>
+            <span className="mt-daygroup-count">{dayCounts[m.fecha]} mov.</span>
+          </div>
+        );
+      }
+      els.push(renderRow(m, showLatest && idx === 0));
+    });
+    return els;
   };
 
   return (
@@ -170,10 +379,11 @@ const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
           <button
             className="btn-ghost btn-export"
             onClick={exportXLSX}
+            disabled={exporting}
             title="Exportar a Excel los movimientos filtrados"
             style={{ marginLeft: 8 }}
           >
-            📊 EXPORTAR EXCEL
+            {exporting ? '⏳ GENERANDO…' : '📊 EXPORTAR EXCEL'}
           </button>
         </div>
       </header>
@@ -221,7 +431,7 @@ const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
       <BotanaCard className="movs-table-card">
         <div className="movs-table">
           <div className="mt-head">
-            <button onClick={() => toggleSort('fecha')}>FECHA {sortKey === 'fecha' ? (sortDir === 'asc' ? '↑' : '↓') : ''}</button>
+            <button onClick={() => toggleSort('fecha')}>FECHA/HORA {sortKey === 'fecha' ? (sortDir === 'asc' ? '↑' : '↓') : ''}</button>
             <div>TIPO</div>
             <div>CATEGORÍA</div>
             <div>CONCEPTO</div>
@@ -230,65 +440,7 @@ const MovsListView = ({ movs, cats, cajas = [], onEdit, onDelete, user }) => {
             <button onClick={() => toggleSort('monto')} className="ar">MONTO {sortKey === 'monto' ? (sortDir === 'asc' ? '↑' : '↓') : ''}</button>
             <div></div>
           </div>
-          {filtered.slice(0, 200).map(m => {
-            const c = cats.find(x => x.nombre === m.categoria);
-            const cajaInfo = getCajaInfo(m.caja);
-            const prov = getProveedor(m);
-            return (
-              <div key={m.id} className="mt-row">
-                <div className="mono">{fmtDate(m.fecha)}</div>
-                <div><span className={'tipo-tag ' + (m.tipo === 'INGRESO' ? 'ing' : 'gas')}>{m.tipo === 'INGRESO' ? '+' : '−'}</span></div>
-                <div className="cat-cell">
-                  <span className="cat-dot" style={{ background: c?.color || '#888' }}>{c?.icon || '•'}</span>
-                  <span>{m.categoria}</span>
-                </div>
-                <div className="concept-cell">
-                  <div>{m.concepto || '—'}</div>
-                  {prov && (
-                    <div className="prov-line" style={{ fontSize: 11, opacity: 0.7, marginTop: 2 }}>
-                      🏢 {prov}
-                    </div>
-                  )}
-                  {m.src === 'xml' && <span className="src-badge">XML</span>}
-                  {m.cxp_id && <span className="src-badge" style={{ background: '#FFD166', color: '#1F2937' }}>CxP</span>}
-                  {(m.afecta_saldo === 0 || m.afecta_saldo === false) && (
-                    <span className="src-badge" style={{ background: '#E0E7FF', color: '#3730A3', marginLeft: 4 }}
-                      title="Este gasto fue descontado del efectivo entregado por el vendedor — queda registrado pero NO mueve el saldo de la caja">
-                      no afecta saldo
-                    </span>
-                  )}
-                </div>
-                <div className="caja-cell">
-                  <span className="caja-dot" style={{ background: cajaInfo.color + '22', color: cajaInfo.color, padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                    <span>{cajaInfo.icon}</span>
-                    <span>{cajaInfo.nombre}</span>
-                  </span>
-                </div>
-                <div>{m.usuario || '—'}</div>
-                <div className={'ar mono amount-cell ' + (m.tipo === 'INGRESO' ? 'pos' : 'neg')}>
-                  {m.tipo === 'INGRESO' ? '+' : '−'}{fmtMXN(m.monto)}
-                </div>
-                <div className="actions-cell">
-                  {(() => {
-                    if (!user) return null;
-                    const rol = user.rol;
-                    if (rol === 'consulta') return null;
-                    // editar: usuario edita propios; admin/gerente edita todo
-                    const canEdit = (rol === 'admin' || rol === 'gerente') ||
-                      (rol === 'usuario' && (m.user_id === user.id || m.usuario === user.nombre));
-                    // borrar: solo admin y gerente, con PIN (lo maneja el handler)
-                    const canDelete = rol === 'admin' || rol === 'gerente';
-                    return (
-                      <>
-                        {canEdit && <button className="ic-btn" onClick={() => onEdit(m)} title="Editar">✎</button>}
-                        {canDelete && <button className="ic-btn danger" onClick={() => onDelete(m.id)} title="Eliminar (requiere PIN)">🗑</button>}
-                      </>
-                    );
-                  })()}
-                </div>
-              </div>
-            );
-          })}
+          {buildRows()}
           {filtered.length === 0 && <div className="empty pad">No hay movimientos con esos filtros.</div>}
           {filtered.length > 200 && <div className="empty pad">Mostrando 200 de {filtered.length}. Refina la búsqueda.</div>}
         </div>
