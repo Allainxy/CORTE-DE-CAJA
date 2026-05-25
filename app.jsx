@@ -452,7 +452,7 @@ function App() {
           addCaja={addCaja} updateCaja={updateCaja} archivarCaja={archivarCaja} deleteCaja={deleteCaja}
           onTransferClick={() => setTransferOpen(true)} setFilterCaja={setFilterCaja} setActive={setActive} openCapture={openCapture} />}
         {active === 'reportes' && <ReportsView movs={filteredMovs} cats={cats} groups={groups} />}
-        {active === 'finrep' && <FinrepView movs={filteredMovs} cats={cats} cajas={cajas} user={user} />}
+        {active === 'finrep' && <FinrepView movs={filteredMovs} cats={cats} groups={groups} cajas={cajas} user={user} />}
         {active === 'categorias' && <CategoriasView cats={cats} movs={movs} groups={groups} user={user} addCategory={addCategory} deleteCategory={deleteCategory} updateCategory={updateCategory} addGroup={addGroup} deleteGroup={deleteGroup} updateGroup={updateGroup} reorderGroup={reorderGroup} budgets={budgets} setBudget={setBudget} />}
         {active === 'usuarios' && user?.rol === 'admin' && <UsersView cajas={cajas} user={user} />}
         {active === 'arqueo' && <ArqueoView cajas={cajas} user={user} saldoCaja={saldoCaja} />}

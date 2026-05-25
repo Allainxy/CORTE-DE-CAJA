@@ -1,38 +1,40 @@
 // finrep-view.jsx — REPORTE FINANCIERO (Estado de flujo de efectivo)
-// Secciones: INGRESOS − COSTO DE VENTA = UTILIDAD BRUTA − GASTOS = FLUJO
-//            OPERATIVO; y TRANSFERENCIAS ENTRE CAJAS (informativo, no afecta).
-// Columnas por SEMANA dentro del periodo elegido (Semana / Mes / Año).
-// La clasificación de cada categoría se guarda GLOBAL en el servidor
-// (app_settings, clave 'finrep_classification') y se edita arrastrando.
-// v2026-05-24d
+// Secciones (arrastrables): INGRESOS − COSTO DE VENTA = UTILIDAD BRUTA
+//   − GASTOS = FLUJO OPERATIVO ; TRANSFERENCIAS / OTROS (informativo).
+// DENTRO de cada sección, las categorías se agrupan por su GRUPO del sistema
+//   (group_id), con subtotal por grupo y grupos colapsables.
+// Columnas por SEMANA dentro del periodo (Semana / Mes / Año).
+// La clasificación categoría→sección se guarda GLOBAL en el servidor
+//   (app_settings, clave 'finrep_classification').
+// v2026-05-24e
 const { useState, useEffect, useMemo, useRef } = React;
 
 const FINREP_SETTING_KEY = 'finrep_classification';
 const FINREP_SECTIONS = [
-  { id: 'ingreso',   label: 'INGRESOS',                tone: 'pos',  desc: 'Ventas y entradas de dinero' },
-  { id: 'costo',     label: 'COSTO DE VENTA',          tone: 'neg',  desc: 'Mercancía, bobina, bolsa, etiqueta…' },
-  { id: 'gasto',     label: 'GASTOS',                  tone: 'neg',  desc: 'Operación: nómina, renta, servicios…' },
-  { id: 'transfer',  label: 'TRANSFERENCIAS / OTROS',  tone: 'info', desc: 'Movimientos entre cajas, créditos (no afectan el flujo)' }
+  { id: 'ingreso',   label: 'INGRESOS',                tone: 'pos',  sign: 1,  desc: 'Ventas y entradas de dinero' },
+  { id: 'costo',     label: 'COSTO DE VENTA',          tone: 'neg',  sign: -1, desc: 'Mercancía, bobina, bolsa, etiqueta…' },
+  { id: 'gasto',     label: 'GASTOS',                  tone: 'neg',  sign: -1, desc: 'Operación: nómina, renta, servicios…' },
+  { id: 'transfer',  label: 'TRANSFERENCIAS / OTROS',  tone: 'info', sign: 1,  desc: 'Movimientos entre cajas, créditos (no afectan el flujo)' }
 ];
+const SIN_GRUPO = '__sin_grupo__';
 
 (function injectFinrepStyles() {
-  if (document.getElementById('finrep-styles')) return;
+  const old = document.getElementById('finrep-styles'); if (old) old.remove();
   const s = document.createElement('style');
   s.id = 'finrep-styles';
   s.textContent = `
     .finrep-view .fr-controls { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: flex-end; }
     .finrep-view .fr-controls label { display: flex; flex-direction: column; gap: 4px; font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.08em; color: var(--ink-soft, #666); }
-    .finrep-view .fr-controls select, .finrep-view .fr-controls input { font-family: var(--f-mono); }
     .finrep-view .fr-seg { display: inline-flex; border: 2px solid var(--line-strong); border-radius: 10px; overflow: hidden; }
     .finrep-view .fr-seg button { border: none; background: var(--surface); padding: 8px 14px; font-family: var(--f-mono); font-size: 12px; font-weight: 700; cursor: pointer; }
     .finrep-view .fr-seg button.active { background: var(--primary); color: #fff; }
 
     .finrep-view .fr-table-wrap { overflow-x: auto; border-radius: 12px; border: 2px solid var(--line-strong); }
     .finrep-view table.fr-table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 13px; }
-    .finrep-view .fr-table th, .finrep-view .fr-table td { padding: 8px 12px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
-    .finrep-view .fr-table th:first-child, .finrep-view .fr-table td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface); z-index: 2; min-width: 220px; }
+    .finrep-view .fr-table th, .finrep-view .fr-table td { padding: 7px 12px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+    .finrep-view .fr-table th:first-child, .finrep-view .fr-table td:first-child { text-align: left; position: sticky; left: 0; background: var(--surface); z-index: 2; min-width: 240px; }
     .finrep-view .fr-table thead th { background: var(--ink); color: var(--bg); font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.06em; position: sticky; top: 0; z-index: 3; }
-    .finrep-view .fr-table thead th:first-child { z-index: 4; background: var(--ink); color: var(--bg); }
+    .finrep-view .fr-table thead th:first-child { z-index: 4; }
     .finrep-view .fr-num { font-family: var(--f-mono); font-weight: 700; }
     .finrep-view .fr-pos { color: var(--green); }
     .finrep-view .fr-neg { color: var(--red); }
@@ -43,22 +45,29 @@ const FINREP_SECTIONS = [
     .finrep-view .fr-sec-head.pos td { color: var(--green); }
     .finrep-view .fr-sec-head.neg td { color: var(--red); }
     .finrep-view .fr-sec-head.info td { color: var(--ink-soft, #555); }
-    .finrep-view .fr-cat td:first-child { padding-left: 26px; }
-    .finrep-view .fr-cat .fr-dot { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; color: #fff; font-size: 10px; margin-right: 7px; vertical-align: middle; border: 1.5px solid var(--line-strong); }
+
+    .finrep-view .fr-grp td:first-child { padding-left: 22px; cursor: pointer; font-weight: 700; }
+    .finrep-view .fr-grp td { background: rgba(0,0,0,0.025); }
+    .finrep-view .fr-grp .fr-caret { display: inline-block; width: 14px; font-family: var(--f-mono); opacity: 0.6; }
+    .finrep-view .fr-grp .fr-grp-dot { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 4px; color: #fff; font-size: 10px; margin-right: 7px; vertical-align: middle; border: 1.5px solid var(--line-strong); }
+
+    .finrep-view .fr-cat td:first-child { padding-left: 50px; }
+    .finrep-view .fr-cat .fr-dot { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 4px; color: #fff; font-size: 9px; margin-right: 7px; vertical-align: middle; border: 1px solid var(--line-strong); }
+
     .finrep-view .fr-subtotal td { font-weight: 800; border-top: 1.5px solid var(--line); background: var(--surface); }
     .finrep-view .fr-derived td { background: var(--yellow, #FFD166); color: var(--ink); font-weight: 800; border-top: 2px solid var(--line-strong); border-bottom: 2px solid var(--line-strong); }
     .finrep-view .fr-derived td:first-child { background: var(--yellow, #FFD166); }
     .finrep-view .fr-final td { background: var(--ink); color: var(--bg); font-weight: 800; font-size: 14px; }
     .finrep-view .fr-final td:first-child { background: var(--ink); color: var(--bg); }
-    .finrep-view .fr-unclassified td { background: #FFF4E0; }
 
     .finrep-view .fr-cfg-bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; }
     .finrep-view .fr-cfg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin-top: 8px; }
     .finrep-view .fr-cfg-col { border: 2px dashed var(--line); border-radius: 12px; padding: 10px; min-height: 120px; background: var(--surface); transition: background 0.12s, border-color 0.12s; }
     .finrep-view .fr-cfg-col.drag-over { background: var(--primary-soft); border-color: var(--primary); }
-    .finrep-view .fr-cfg-col h4 { margin: 0 0 8px; font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.08em; }
+    .finrep-view .fr-cfg-col h4 { margin: 0 0 4px; font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.08em; }
     .finrep-view .fr-cfg-col .fr-cfg-desc { font-size: 10px; opacity: 0.6; margin-bottom: 8px; }
-    .finrep-view .fr-chip { display: flex; align-items: center; gap: 6px; padding: 5px 8px; margin-bottom: 6px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line); cursor: grab; font-size: 12px; }
+    .finrep-view .fr-cfg-grp { font-family: var(--f-mono); font-size: 9px; letter-spacing: 0.06em; opacity: 0.55; margin: 8px 0 3px; }
+    .finrep-view .fr-chip { display: flex; align-items: center; gap: 6px; padding: 5px 8px; margin-bottom: 5px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--line); cursor: grab; font-size: 12px; }
     .finrep-view .fr-chip:active { cursor: grabbing; }
     .finrep-view .fr-chip .fr-chip-dot { width: 14px; height: 14px; border-radius: 3px; color: #fff; display: inline-grid; place-items: center; font-size: 9px; flex: none; }
     .finrep-view .fr-chip .fr-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -81,42 +90,47 @@ function frEnsureXLSX() {
   });
 }
 
-// Semana ISO-ish del mes (1..5) y nombres
-const frWeekOfMonth = (iso) => {
-  const d = parseInt((iso || '').split('-')[2] || '0', 10);
-  return d ? Math.ceil(d / 7) : 0;
-};
+const frWeekOfMonth = (iso) => { const d = parseInt((iso || '').split('-')[2] || '0', 10); return d ? Math.ceil(d / 7) : 0; };
 const MESES = ['ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'AGO', 'SEP', 'OCT', 'NOV', 'DIC'];
 const MESES_LARGO = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
-const FinrepView = ({ movs = [], cats = [], cajas = [], user }) => {
+const FinrepView = ({ movs = [], cats = [], groups = [], cajas = [], user }) => {
   const now = new Date();
-  const [periodo, setPeriodo] = useState('mes'); // 'semana' | 'mes' | 'anio'
+  const [periodo, setPeriodo] = useState('mes');
   const [anio, setAnio] = useState(now.getFullYear());
-  const [mes, setMes] = useState(now.getMonth());   // 0-11
-  const [semana, setSemana] = useState(frWeekOfMonth(`${now.getFullYear()}-01-${String(now.getDate()).padStart(2, '0')}`) || 1);
-  const [classif, setClassif] = useState(null);     // { [catNombre]: 'ingreso'|'costo'|'gasto'|'transfer' }
+  const [mes, setMes] = useState(now.getMonth());
+  const [semana, setSemana] = useState(Math.ceil(now.getDate() / 7) || 1);
+  const [classif, setClassif] = useState(null);
   const [loadingCfg, setLoadingCfg] = useState(true);
   const [showCfg, setShowCfg] = useState(false);
   const [savingCfg, setSavingCfg] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [dragOver, setDragOver] = useState(null);
+  const [collapsed, setCollapsed] = useState({}); // grupoKey -> true (colapsado)
 
   const canEditCfg = user && (user.rol === 'admin' || user.rol === 'gerente');
 
   const catMap = useMemo(() => { const m = {}; cats.forEach(c => { m[c.nombre] = c; }); return m; }, [cats]);
+  const groupMap = useMemo(() => { const m = {}; groups.forEach(g => { m[g.id] = g; }); return m; }, [groups]);
 
-  // Clasificación por defecto (si no hay nada guardado): por tipo del movimiento/categoría
+  // grupo (objeto) de una categoría por nombre
+  const groupOfCat = (catNombre) => {
+    const c = catMap[catNombre];
+    if (c && c.group_id && groupMap[c.group_id]) return groupMap[c.group_id];
+    return null;
+  };
+
   const defaultClassFor = (catNombre) => {
     const c = catMap[catNombre];
     const n = (catNombre || '').toUpperCase();
-    if (/MERCANC|BOBINA|BOLSA|ETIQUET|CAJA\b|EMPAQUE|INSUMO/.test(n)) return 'costo';
+    const g = groupOfCat(catNombre);
+    const gn = (g?.nombre || '').toUpperCase();
+    if (/MERCANC|BOBINA|BOLSA|ETIQUET|EMPAQUE|INSUMO/.test(n) || /MERCANC|EMPAQUE|INSUMO|COSTO/.test(gn)) return 'costo';
     if (c && c.tipo === 'INGRESO') return 'ingreso';
-    if (/TRASPAS|TRANSFER|PAGO CREDIT|PRESTAMO|DEPOSITO|TC KONFIO|TARJETA KONFIO/.test(n)) return 'transfer';
+    if (/TRASPAS|TRANSFER|PAGO CREDIT|PRESTAMO|DEPOSITO|KONFIO/.test(n) || /TRASPAS|TRANSFER|CREDIT|PRESTAMO/.test(gn)) return 'transfer';
     return 'gasto';
   };
 
-  // Cargar configuración global del servidor
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -124,19 +138,15 @@ const FinrepView = ({ movs = [], cats = [], cajas = [], user }) => {
       try {
         const r = await KBotAPI.getSetting(FINREP_SETTING_KEY);
         if (alive) setClassif(r && r.value && typeof r.value === 'object' ? r.value : {});
-      } catch (e) {
-        if (alive) setClassif({});
-      } finally {
-        if (alive) setLoadingCfg(false);
-      }
+      } catch (e) { if (alive) setClassif({}); }
+      finally { if (alive) setLoadingCfg(false); }
     })();
     return () => { alive = false; };
   }, []);
 
-  // Resolver sección de cada categoría: guardada > default
   const sectionOf = (catNombre) => (classif && classif[catNombre]) || defaultClassFor(catNombre);
 
-  // Filtro por periodo + cálculo de columnas (semanas) y filas (categorías)
+  // ---- Modelo: secciones → grupos → categorías, con columnas (semanas/meses) ----
   const model = useMemo(() => {
     if (!classif) return null;
     const inRange = (m) => {
@@ -147,52 +157,55 @@ const FinrepView = ({ movs = [], cats = [], cajas = [], user }) => {
       if (periodo === 'anio') return true;
       if (mo !== mes) return false;
       if (periodo === 'mes') return true;
-      return frWeekOfMonth(f) === semana; // semana
+      return frWeekOfMonth(f) === semana;
     };
     const rows = movs.filter(m => !m.deleted && inRange(m));
 
-    // Definir columnas
     let cols = [];
-    if (periodo === 'anio') {
-      cols = MESES.map((mm, i) => ({ key: 'm' + i, label: mm, test: (m) => parseInt(m.fecha.slice(5, 7), 10) - 1 === i }));
-    } else if (periodo === 'mes') {
-      cols = [1, 2, 3, 4, 5].map(w => ({ key: 'w' + w, label: 'SEM ' + w, test: (m) => frWeekOfMonth(m.fecha) === w }));
-    } else {
-      cols = [{ key: 'wk', label: 'SEM ' + semana, test: () => true }];
-    }
+    if (periodo === 'anio') cols = MESES.map((mm, i) => ({ key: 'm' + i, label: mm, test: (m) => parseInt(m.fecha.slice(5, 7), 10) - 1 === i }));
+    else if (periodo === 'mes') cols = [1, 2, 3, 4, 5].map(w => ({ key: 'w' + w, label: 'SEM ' + w, test: (m) => frWeekOfMonth(m.fecha) === w }));
+    else cols = [{ key: 'wk', label: 'SEM ' + semana, test: () => true }];
 
-    // Acumular: sección → categoría → [col]=monto (con signo)
-    const acc = {}; // sec -> { cat -> { total, byCol{} , count, isIngreso } }
+    // sec -> grupoKey -> { group, cats: {catNombre -> {byCol,total,count}}, total, byCol }
+    const acc = {};
     const colTotals = {}; cols.forEach(c => { colTotals[c.key] = { ingreso: 0, costo: 0, gasto: 0, transfer: 0 }; });
-    const unclassified = new Set();
 
     rows.forEach(m => {
       const cat = m.categoria || 'SIN CATEGORÍA';
       let sec = sectionOf(cat);
-      // Transferencias detectadas por transfer_id van siempre a 'transfer'
       if (m.transfer_id) sec = 'transfer';
-      if (!classif[cat] && !m.transfer_id && sec === 'gasto' && catMap[cat] === undefined) unclassified.add(cat);
-
-      if (!acc[sec]) acc[sec] = {};
-      if (!acc[sec][cat]) acc[sec][cat] = { cat, total: 0, byCol: {}, count: 0 };
+      const g = groupOfCat(cat);
+      const gKey = g ? g.id : SIN_GRUPO;
       const monto = Number(m.monto) || 0;
       const col = cols.find(c => c.test(m));
+
+      acc[sec] = acc[sec] || {};
+      acc[sec][gKey] = acc[sec][gKey] || { group: g, key: gKey, cats: {}, total: 0, byCol: {} };
+      const grp = acc[sec][gKey];
+      grp.cats[cat] = grp.cats[cat] || { cat, byCol: {}, total: 0, count: 0 };
       if (col) {
-        acc[sec][cat].byCol[col.key] = (acc[sec][cat].byCol[col.key] || 0) + monto;
+        grp.cats[cat].byCol[col.key] = (grp.cats[cat].byCol[col.key] || 0) + monto;
+        grp.byCol[col.key] = (grp.byCol[col.key] || 0) + monto;
         colTotals[col.key][sec] += monto;
       }
-      acc[sec][cat].total += monto;
-      acc[sec][cat].count++;
+      grp.cats[cat].total += monto; grp.cats[cat].count++;
+      grp.total += monto;
     });
 
-    const sectionRows = (sec) => Object.values(acc[sec] || {}).sort((a, b) => b.total - a.total);
+    const sectionGroups = (sec) => Object.values(acc[sec] || {})
+      .map(g => ({ ...g, catList: Object.values(g.cats).sort((a, b) => b.total - a.total) }))
+      .sort((a, b) => {
+        const oa = a.group?.orden ?? 999, ob = b.group?.orden ?? 999;
+        if (oa !== ob) return oa - ob;
+        return b.total - a.total;
+      });
     const sectionTotalByCol = (sec) => { const o = {}; cols.forEach(c => { o[c.key] = colTotals[c.key][sec]; }); return o; };
     const sectionGrand = (sec) => Object.values(colTotals).reduce((s, v) => s + v[sec], 0);
 
-    return { cols, sectionRows, sectionTotalByCol, sectionGrand, unclassified: [...unclassified] };
-  }, [movs, classif, periodo, anio, mes, semana, catMap]);
+    return { cols, sectionGroups, sectionTotalByCol, sectionGrand };
+  }, [movs, classif, periodo, anio, mes, semana, catMap, groupMap]);
 
-  // Categorías para el panel de configuración (todas las activas + las que aparecen en movs)
+  // ---- Panel config: categorías agrupadas por grupo dentro de cada sección ----
   const allCatNames = useMemo(() => {
     const set = new Set();
     cats.forEach(c => { if (!c.deleted) set.add(c.nombre); });
@@ -201,73 +214,63 @@ const FinrepView = ({ movs = [], cats = [], cajas = [], user }) => {
   }, [cats, movs]);
 
   const cfgBuckets = useMemo(() => {
-    const b = { ingreso: [], costo: [], gasto: [], transfer: [] };
-    allCatNames.forEach(n => { (b[sectionOf(n)] || b.gasto).push(n); });
+    const b = { ingreso: {}, costo: {}, gasto: {}, transfer: {} };
+    allCatNames.forEach(n => {
+      const sec = sectionOf(n);
+      const g = groupOfCat(n);
+      const gName = g?.nombre || 'Sin grupo';
+      (b[sec] || b.gasto)[gName] = (b[sec] || b.gasto)[gName] || [];
+      (b[sec] || b.gasto)[gName].push(n);
+    });
     return b;
-  }, [allCatNames, classif]);
+  }, [allCatNames, classif, groupMap]);
 
-  const moveCat = (catNombre, toSec) => {
-    setClassif(prev => ({ ...(prev || {}), [catNombre]: toSec }));
-  };
+  const moveCat = (catNombre, toSec) => setClassif(prev => ({ ...(prev || {}), [catNombre]: toSec }));
+  const toggleGroup = (sec, key) => setCollapsed(prev => ({ ...prev, [sec + ':' + key]: !prev[sec + ':' + key] }));
 
   const saveCfg = async () => {
     if (!canEditCfg) return;
     setSavingCfg(true);
-    try {
-      await KBotAPI.setSetting(FINREP_SETTING_KEY, classif || {});
-      setShowCfg(false);
-    } catch (e) {
-      alert('No se pudo guardar la configuración: ' + (e.message || e));
-    } finally {
-      setSavingCfg(false);
-    }
+    try { await KBotAPI.setSetting(FINREP_SETTING_KEY, classif || {}); setShowCfg(false); }
+    catch (e) { alert('No se pudo guardar: ' + (e.message || e)); }
+    finally { setSavingCfg(false); }
   };
 
   const fmt = (n) => fmtMXN(Math.abs(n || 0));
-  const periodoLabel = periodo === 'anio' ? `Año ${anio}`
-    : periodo === 'mes' ? `${MESES_LARGO[mes]} ${anio}`
-    : `Semana ${semana} · ${MESES_LARGO[mes]} ${anio}`;
+  const periodoLabel = periodo === 'anio' ? `Año ${anio}` : periodo === 'mes' ? `${MESES_LARGO[mes]} ${anio}` : `Semana ${semana} · ${MESES_LARGO[mes]} ${anio}`;
 
-  // ---- Exportar a Excel ----
+  // ---- Export ----
   const exportXLSX = async () => {
     if (!model || model.cols.length === 0) { alert('No hay datos para exportar.'); return; }
     setExporting(true);
     try { await frEnsureXLSX(); } catch (e) { setExporting(false); alert('No se pudo cargar Excel.'); return; }
     if (typeof XLSX === 'undefined') { setExporting(false); return; }
-
     const cols = model.cols;
-    const aoa = [];
-    aoa.push(['REPORTE FINANCIERO · ' + periodoLabel]);
-    aoa.push([]);
-    const header = ['CONCEPTO', ...cols.map(c => c.label), 'TOTAL'];
-    aoa.push(header);
-
+    const aoa = [['REPORTE FINANCIERO · ' + periodoLabel], [], ['CONCEPTO', ...cols.map(c => c.label), 'TOTAL']];
     const pushSection = (secId, label, sign) => {
       aoa.push([label]);
-      model.sectionRows(secId).forEach(r => {
-        aoa.push([r.cat, ...cols.map(c => (r.byCol[c.key] || 0) * sign), r.total * sign]);
+      model.sectionGroups(secId).forEach(g => {
+        const gname = g.group?.nombre || 'Sin grupo';
+        aoa.push(['  ' + gname, ...cols.map(c => (g.byCol[c.key] || 0) * sign), g.total * sign]);
+        g.catList.forEach(r => aoa.push(['     ' + r.cat, ...cols.map(c => (r.byCol[c.key] || 0) * sign), r.total * sign]));
       });
       const st = model.sectionTotalByCol(secId);
-      aoa.push(['  SUBTOTAL ' + label, ...cols.map(c => (st[c.key] || 0) * sign), model.sectionGrand(secId) * sign]);
+      aoa.push(['SUBTOTAL ' + label, ...cols.map(c => (st[c.key] || 0) * sign), model.sectionGrand(secId) * sign]);
     };
-
     pushSection('ingreso', 'INGRESOS', 1);
     pushSection('costo', 'COSTO DE VENTA', -1);
-    // utilidad bruta
     const ub = model.sectionGrand('ingreso') - model.sectionGrand('costo');
     aoa.push(['UTILIDAD BRUTA', ...cols.map(c => model.sectionTotalByCol('ingreso')[c.key] - model.sectionTotalByCol('costo')[c.key]), ub]);
     pushSection('gasto', 'GASTOS', -1);
     const fo = ub - model.sectionGrand('gasto');
-    aoa.push(['FLUJO OPERATIVO', ...cols.map(c => (model.sectionTotalByCol('ingreso')[c.key] - model.sectionTotalByCol('costo')[c.key] - model.sectionTotalByCol('gasto')[c.key])), fo]);
+    aoa.push(['FLUJO OPERATIVO', ...cols.map(c => model.sectionTotalByCol('ingreso')[c.key] - model.sectionTotalByCol('costo')[c.key] - model.sectionTotalByCol('gasto')[c.key]), fo]);
     aoa.push([]);
     pushSection('transfer', 'TRANSFERENCIAS / OTROS (informativo)', 1);
-
     const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws['!cols'] = [{ wch: 38 }, ...cols.map(() => ({ wch: 14 })), { wch: 16 }];
+    ws['!cols'] = [{ wch: 40 }, ...cols.map(() => ({ wch: 14 })), { wch: 16 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Flujo de efectivo');
-    const ts = new Date().toISOString().slice(0, 10);
-    XLSX.writeFile(wb, `reporte_financiero_${periodo}_${ts}.xlsx`);
+    XLSX.writeFile(wb, `reporte_financiero_${periodo}_${new Date().toISOString().slice(0, 10)}.xlsx`);
     setExporting(false);
   };
 
@@ -276,27 +279,43 @@ const FinrepView = ({ movs = [], cats = [], cajas = [], user }) => {
   }
 
   const cols = model.cols;
-  const numCell = (v, sign, key) => {
+  const numCell = (v, sign, key, extraCls = '') => {
     const val = (v || 0) * sign;
     const cls = val > 0 ? 'fr-pos' : val < 0 ? 'fr-neg' : 'fr-zero';
-    return <td key={key} className={'fr-num ' + cls}>{val === 0 ? '—' : (val > 0 ? '' : '−') + fmt(val)}</td>;
+    return <td key={key} className={'fr-num ' + cls + ' ' + extraCls}>{val === 0 ? '—' : (val > 0 ? '' : '−') + fmt(val)}</td>;
   };
 
   const SectionBlock = ({ secId, label, tone, sign }) => {
-    const rows = model.sectionRows(secId);
+    const grps = model.sectionGroups(secId);
     const st = model.sectionTotalByCol(secId);
     return (
       <>
         <tr className={'fr-sec-head ' + tone}><td>{label}</td>{cols.map(c => <td key={c.key}></td>)}<td></td></tr>
-        {rows.length === 0 && <tr className="fr-cat"><td style={{ opacity: 0.5 }}>— sin movimientos —</td>{cols.map(c => <td key={c.key}></td>)}<td></td></tr>}
-        {rows.map(r => {
-          const c = catMap[r.cat];
+        {grps.length === 0 && <tr className="fr-cat"><td style={{ opacity: 0.5, paddingLeft: 22 }}>— sin movimientos —</td>{cols.map(c => <td key={c.key}></td>)}<td></td></tr>}
+        {grps.map(g => {
+          const gKey = g.key;
+          const isCollapsed = collapsed[secId + ':' + gKey];
+          const gName = g.group?.nombre || 'Sin grupo';
+          const gColor = g.group?.color || '#888';
+          const gIcon = g.group?.icon || '📁';
           return (
-            <tr key={r.cat} className="fr-cat">
-              <td><span className="fr-dot" style={{ background: c?.color || '#888' }}>{c?.icon || '•'}</span>{r.cat} <span style={{ opacity: 0.4, fontFamily: 'var(--f-mono)', fontSize: 10 }}>×{r.count}</span></td>
-              {cols.map(col => numCell(r.byCol[col.key], sign, col.key))}
-              <td className={'fr-num fr-total-col ' + ((r.total * sign) >= 0 ? 'fr-pos' : 'fr-neg')}>{(r.total * sign) >= 0 ? '' : '−'}{fmt(r.total)}</td>
-            </tr>
+            <React.Fragment key={gKey}>
+              <tr className="fr-grp" onClick={() => toggleGroup(secId, gKey)}>
+                <td><span className="fr-caret">{isCollapsed ? '▸' : '▾'}</span><span className="fr-grp-dot" style={{ background: gColor }}>{gIcon}</span>{gName} <span style={{ opacity: 0.4, fontFamily: 'var(--f-mono)', fontSize: 10 }}>({g.catList.length})</span></td>
+                {cols.map(col => numCell(g.byCol[col.key], sign, col.key))}
+                <td className={'fr-num fr-total-col ' + ((g.total * sign) >= 0 ? 'fr-pos' : 'fr-neg')}>{(g.total * sign) >= 0 ? '' : '−'}{fmt(g.total)}</td>
+              </tr>
+              {!isCollapsed && g.catList.map(r => {
+                const c = catMap[r.cat];
+                return (
+                  <tr key={r.cat} className="fr-cat">
+                    <td><span className="fr-dot" style={{ background: c?.color || '#888' }}>{c?.icon || '•'}</span>{r.cat} <span style={{ opacity: 0.4, fontFamily: 'var(--f-mono)', fontSize: 10 }}>×{r.count}</span></td>
+                    {cols.map(col => numCell(r.byCol[col.key], sign, col.key))}
+                    <td className={'fr-num fr-total-col ' + ((r.total * sign) >= 0 ? 'fr-pos' : 'fr-neg')}>{(r.total * sign) >= 0 ? '' : '−'}{fmt(r.total)}</td>
+                  </tr>
+                );
+              })}
+            </React.Fragment>
           );
         })}
         <tr className="fr-subtotal">
@@ -308,7 +327,6 @@ const FinrepView = ({ movs = [], cats = [], cajas = [], user }) => {
     );
   };
 
-  // Filas derivadas
   const ubByCol = (key) => model.sectionTotalByCol('ingreso')[key] - model.sectionTotalByCol('costo')[key];
   const foByCol = (key) => ubByCol(key) - model.sectionTotalByCol('gasto')[key];
   const ubGrand = model.sectionGrand('ingreso') - model.sectionGrand('costo');
@@ -323,12 +341,8 @@ const FinrepView = ({ movs = [], cats = [], cajas = [], user }) => {
         </div>
         <div className="head-actions mono">
           <span className={'pill pill-net ' + (foGrand >= 0 ? 'pos' : 'neg')}>FLUJO {foGrand >= 0 ? '' : '−'}{fmt(foGrand)}</span>
-          <button className="btn-ghost" onClick={() => setShowCfg(s => !s)} style={{ marginLeft: 8 }}>
-            ⚙️ {showCfg ? 'CERRAR CONFIG' : 'CONFIGURAR'}
-          </button>
-          <button className="btn-ghost btn-export" onClick={exportXLSX} disabled={exporting} style={{ marginLeft: 8 }}>
-            {exporting ? '⏳ GENERANDO…' : '📊 EXPORTAR EXCEL'}
-          </button>
+          <button className="btn-ghost" onClick={() => setShowCfg(s => !s)} style={{ marginLeft: 8 }}>⚙️ {showCfg ? 'CERRAR CONFIG' : 'CONFIGURAR'}</button>
+          <button className="btn-ghost btn-export" onClick={exportXLSX} disabled={exporting} style={{ marginLeft: 8 }}>{exporting ? '⏳ GENERANDO…' : '📊 EXPORTAR EXCEL'}</button>
         </div>
       </header>
 
@@ -367,39 +381,40 @@ const FinrepView = ({ movs = [], cats = [], cajas = [], user }) => {
           <div className="fr-cfg-bar">
             <div>
               <strong>Clasificación de categorías</strong>
-              <div className="fr-hint">{canEditCfg ? 'Arrastra cada categoría a su sección. Se guarda para todos los usuarios.' : 'Solo lectura — pide a un administrador o gerente que ajuste la clasificación.'}</div>
+              <div className="fr-hint">{canEditCfg ? 'Arrastra cada categoría a su sección del flujo. Dentro del reporte se agrupan por tu grupo del sistema. Se guarda para todos.' : 'Solo lectura — pide a un administrador o gerente que ajuste la clasificación.'}</div>
             </div>
-            {canEditCfg && (
-              <button className="btn-primary" onClick={saveCfg} disabled={savingCfg}>
-                {savingCfg ? 'GUARDANDO…' : '💾 GUARDAR CONFIGURACIÓN'}
-              </button>
-            )}
+            {canEditCfg && <button className="btn-primary" onClick={saveCfg} disabled={savingCfg}>{savingCfg ? 'GUARDANDO…' : '💾 GUARDAR'}</button>}
           </div>
           <div className="fr-cfg-grid">
-            {FINREP_SECTIONS.map(sec => (
-              <div
-                key={sec.id}
-                className={'fr-cfg-col' + (dragOver === sec.id ? ' drag-over' : '')}
-                onDragOver={e => { if (canEditCfg) { e.preventDefault(); setDragOver(sec.id); } }}
-                onDragLeave={() => setDragOver(d => d === sec.id ? null : d)}
-                onDrop={e => { if (!canEditCfg) return; e.preventDefault(); const cat = e.dataTransfer.getData('text/plain'); if (cat) moveCat(cat, sec.id); setDragOver(null); }}
-              >
-                <h4 className={sec.tone === 'pos' ? 'fr-pos' : sec.tone === 'neg' ? 'fr-neg' : ''}>{sec.label} <span style={{ opacity: 0.5 }}>({cfgBuckets[sec.id].length})</span></h4>
-                <div className="fr-cfg-desc">{sec.desc}</div>
-                {cfgBuckets[sec.id].map(cat => {
-                  const c = catMap[cat];
-                  return (
-                    <div key={cat} className="fr-chip"
-                      draggable={canEditCfg}
-                      onDragStart={e => e.dataTransfer.setData('text/plain', cat)}>
-                      <span className="fr-chip-dot" style={{ background: c?.color || '#888' }}>{c?.icon || '•'}</span>
-                      <span className="fr-chip-name">{cat}</span>
+            {FINREP_SECTIONS.map(sec => {
+              const byGroup = cfgBuckets[sec.id] || {};
+              const count = Object.values(byGroup).reduce((s, arr) => s + arr.length, 0);
+              return (
+                <div key={sec.id}
+                  className={'fr-cfg-col' + (dragOver === sec.id ? ' drag-over' : '')}
+                  onDragOver={e => { if (canEditCfg) { e.preventDefault(); setDragOver(sec.id); } }}
+                  onDragLeave={() => setDragOver(d => d === sec.id ? null : d)}
+                  onDrop={e => { if (!canEditCfg) return; e.preventDefault(); const cat = e.dataTransfer.getData('text/plain'); if (cat) moveCat(cat, sec.id); setDragOver(null); }}>
+                  <h4 className={sec.tone === 'pos' ? 'fr-pos' : sec.tone === 'neg' ? 'fr-neg' : ''}>{sec.label} <span style={{ opacity: 0.5 }}>({count})</span></h4>
+                  <div className="fr-cfg-desc">{sec.desc}</div>
+                  {Object.keys(byGroup).sort().map(gName => (
+                    <div key={gName}>
+                      <div className="fr-cfg-grp">▸ {gName}</div>
+                      {byGroup[gName].map(cat => {
+                        const c = catMap[cat];
+                        return (
+                          <div key={cat} className="fr-chip" draggable={canEditCfg} onDragStart={e => e.dataTransfer.setData('text/plain', cat)}>
+                            <span className="fr-chip-dot" style={{ background: c?.color || '#888' }}>{c?.icon || '•'}</span>
+                            <span className="fr-chip-name">{cat}</span>
+                          </div>
+                        );
+                      })}
                     </div>
-                  );
-                })}
-                {cfgBuckets[sec.id].length === 0 && <div className="fr-hint" style={{ opacity: 0.4 }}>vacío</div>}
-              </div>
-            ))}
+                  ))}
+                  {count === 0 && <div className="fr-hint" style={{ opacity: 0.4 }}>vacío</div>}
+                </div>
+              );
+            })}
           </div>
         </BotanaCard>
       )}
@@ -407,11 +422,7 @@ const FinrepView = ({ movs = [], cats = [], cajas = [], user }) => {
       <div className="fr-table-wrap">
         <table className="fr-table">
           <thead>
-            <tr>
-              <th>CONCEPTO</th>
-              {cols.map(c => <th key={c.key}>{c.label}</th>)}
-              <th>TOTAL</th>
-            </tr>
+            <tr><th>CONCEPTO</th>{cols.map(c => <th key={c.key}>{c.label}</th>)}<th>TOTAL</th></tr>
           </thead>
           <tbody>
             <SectionBlock secId="ingreso" label="INGRESOS" tone="pos" sign={1} />
