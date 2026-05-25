@@ -346,10 +346,14 @@ const CategoriasView = ({ cats, movs, groups = [], user, addCategory, deleteCate
       <div className="cats-grid">
         {['INGRESO', 'GASTO'].map(t => {
           const tipoGroups = groupsByTipo(t);
-          // Agrupar categorías por group_id; las sin grupo van a "_none"
+          const validGroupIds = new Set(tipoGroups.map(g => g.id));
+          // Agrupar categorías por group_id; las sin grupo —o cuyo grupo ya no
+          // existe / fue borrado / es de otro tipo (categorías creadas por los
+          // módulos de Ventas/Nómina/Viáticos)— van a "_none" para que sean
+          // visibles y se les pueda asignar un grupo.
           const catsByGroup = {};
           cats.filter(c => c.tipo === t).forEach(c => {
-            const k = c.group_id || '_none';
+            const k = (c.group_id && validGroupIds.has(c.group_id)) ? c.group_id : '_none';
             (catsByGroup[k] = catsByGroup[k] || []).push(c);
           });
 
@@ -416,11 +420,12 @@ const CategoriasView = ({ cats, movs, groups = [], user, addCategory, deleteCate
                 );
               })}
 
-              {/* Categorías sin grupo (huérfanas tras migración) */}
+              {/* Categorías sin grupo válido — incluye las creadas por los
+                  módulos (Ventas/Nómina/Viáticos) cuyo grupo no existe. */}
               {catsByGroup._none && catsByGroup._none.length > 0 && (
-                <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, opacity: 0.6, letterSpacing: 0.5, marginBottom: 6, paddingLeft: 4 }}>
-                    ❓ SIN CLASIFICAR <span style={{ opacity: 0.5, fontWeight: 400 }}>· {catsByGroup._none.length} cat. (asígnales un grupo)</span>
+                <div style={{ marginBottom: 16, padding: 10, borderRadius: 12, background: '#FFF4E0', border: '2px dashed #F4A261' }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: '#B45309', letterSpacing: 0.5, marginBottom: 6, paddingLeft: 4 }}>
+                    ⚠️ SIN GRUPO ASIGNADO <span style={{ opacity: 0.7, fontWeight: 400 }}>· {catsByGroup._none.length} cat. — edítalas (✏️) y asígnales un grupo para que aparezcan agrupadas en el Reporte Financiero</span>
                   </div>
                   {catsByGroup._none.map(c => renderCatCard(c, t, stats, budgets, setBudget, deleteCategory, isAdmin, openEditCat))}
                 </div>

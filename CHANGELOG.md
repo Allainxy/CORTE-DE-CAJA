@@ -11,6 +11,88 @@ El proyecto sigue [versionado semántico](https://semver.org/lang/es/) — `MAYO
 
 ---
 
+## [1.16.0] — 2026-05-24
+
+### 📌 Resumen ejecutivo
+
+Tres mejoras a Movimientos y dos módulos nuevos de análisis.
+
+**Movimientos — orden por hora real y vista más clara.** La lista ahora se ordena por el momento exacto de ejecución (fecha + hora), no solo por fecha, así el último movimiento capturado siempre queda hasta arriba. Cada renglón muestra la hora, los movimientos se agrupan por día ("HOY", "AYER", fecha) y el más reciente lleva la etiqueta **ÚLTIMO**. Se corrigió el empalme visual entre las columnas CAJA y USUARIO y los botones de acción quedan alineados a la derecha.
+
+**Arranque más rápido.** Se cambió React a su build de producción y la librería de Excel (~900 KB) ya no se carga en cada arranque, sino solo al momento de exportar. El ingreso a la app se siente más ágil.
+
+**Usuarios — error corregido.** La pantalla de Usuarios fallaba con "KBotAPI.listUsers is not a function" porque al cliente le faltaban los métodos de gestión de usuarios, aunque el backend sí tenía los endpoints. Se agregaron a `api.js`.
+
+**Nuevo módulo: Resumen por día.** Vista de corte diario que agrupa los movimientos por día y, dentro de cada día, por categoría (ventas en total, cada nómina por concepto, etc.), con ingresos/egresos, subtotal por día y totales generales. Reemplaza el seguimiento manual en Excel. Incluye exportación a Excel.
+
+**Nuevo módulo: Reporte Financiero (flujo de efectivo).** Estado de flujo de efectivo por semana, mes o año con columnas semanales, al estilo de la hoja de Excel: Ingresos − Costo de venta = Utilidad bruta − Gastos = Flujo operativo, más una sección informativa de transferencias entre cajas que no afecta el flujo. Las categorías se clasifican en las secciones mediante un panel de arrastrar (drag & drop) y, dentro de cada sección, se agrupan por el grupo contable del sistema (colapsable). La clasificación se guarda **global** en el servidor, compartida por todos los usuarios.
+
+### ✨ Added
+
+#### Módulo Resumen por día (`daily-view.jsx`)
+
+- Nueva vista (`active === 'diario'`) accesible desde el menú lateral con ícono de calendario.
+- Agrupa movimientos por día → categoría, con columnas INGRESOS / EGRESOS, subtotal por día y banda de totales del rango.
+- Filtro de fechas DESDE/HASTA; respeta el filtro de caja global.
+- Exportación a Excel (formato MES / SEMANA / FECHA / CONCEPTO / INGRESOS / EGRESOS con subtotales).
+
+#### Módulo Reporte Financiero (`finrep-view.jsx`)
+
+- Nueva vista (`active === 'finrep'`) accesible desde el menú lateral.
+- Periodos seleccionables: Semana / Mes / Año, con columnas semanales (o mensuales en vista anual).
+- Cuatro secciones: Ingresos, Costo de venta, Gastos, Transferencias/Otros. Filas derivadas Utilidad Bruta y Flujo Operativo.
+- Clasificación categoría→sección por drag & drop; dentro de cada sección las categorías se anidan por grupo contable (`group_id`) con subtotal por grupo y grupos colapsables.
+- Transferencias detectadas por `transfer_id` se ubican automáticamente en la sección informativa.
+- Exportación a Excel con la jerarquía completa (sección → grupo → categoría → subtotales).
+
+#### Configuración global clave-valor (`app_settings`)
+
+- Nueva tabla `app_settings (key, value, updated_at, updated_by)` con migración idempotente.
+- Endpoints `GET /api/settings/:key` (cualquier usuario autenticado) y `PUT /api/settings/:key` (solo admin/gerente).
+- Usado por el Reporte Financiero para guardar la clasificación de categorías (clave `finrep_classification`), compartida por todos los usuarios y dispositivos.
+- Métodos `getSetting` / `setSetting` añadidos a `api.js`.
+
+#### Gestión de usuarios en el cliente (`api.js`)
+
+- Se agregaron los métodos `listUsers`, `createUser`, `updateUser`, `deleteUser`, `resetPassword`, `generatePin`, `setUserCajas`, que consumen los endpoints `/api/users` ya existentes en el backend.
+
+### 🐛 Fixed
+
+#### Pantalla de Usuarios — "KBotAPI.listUsers is not a function"
+
+- `users-view.jsx` invocaba métodos de `KBotAPI` que no existían en `api.js` (commit previo incompleto). Se agregaron los siete métodos faltantes. El backend ya exponía los endpoints correspondientes.
+
+#### Orden de la lista de Movimientos
+
+- Antes ordenaba solo por `m.fecha` (fecha sin hora), por lo que los movimientos del mismo día quedaban en orden arbitrario y el último capturado no aparecía arriba. Ahora ordena por el timestamp real de ejecución (`created_at` → hora embebida en el id manual → `updated_at` → fecha como respaldo).
+
+#### Empalme visual CAJA / USUARIO en Movimientos
+
+- La rejilla de la tabla definía 7 columnas pero cada fila tenía 8 celdas (faltaba la de acciones), provocando que el badge de CAJA se desbordara sobre USUARIO y que los botones de acción se envolvieran. Se definió una rejilla de 8 columnas en escritorio y se contuvo el badge. El layout móvil no cambia.
+
+#### Categorías sin grupo no aparecían en Categorías y Presupuestos
+
+- Las categorías creadas por los módulos (Ventas, Nómina, Viáticos) cuyo `group_id` apuntaba a un grupo inexistente, borrado o de otro tipo no se mostraban en la pantalla de Categorías: el render solo recorría los grupos activos más el bucket `_none` (group_id nulo), por lo que estas categorías quedaban "perdidas" (visibles en el Reporte Financiero como "Sin grupo" pero no editables). Ahora cualquier categoría cuyo grupo no sea un grupo activo del mismo tipo se muestra en el bloque **"⚠️ SIN GRUPO ASIGNADO"** (resaltado), desde donde se le puede asignar un grupo con el botón de editar.
+
+### 🔧 Changed
+
+#### `movs-list.jsx`
+
+- Columna "FECHA" renombrada a "FECHA/HORA"; muestra la hora bajo la fecha.
+- Separadores por día y etiqueta ÚLTIMO en el movimiento más reciente; encabezado de tabla pegajoso (sticky).
+- La exportación a Excel carga la librería SheetJS bajo demanda en lugar de en el arranque.
+
+#### `index.html`
+
+- React cambiado de build de desarrollo a producción (con SRI verificado).
+- Se eliminó la carga eager de `xlsx.full.min.js` (~900 KB) en el arranque.
+
+#### `sync-frontend-files.sh`
+
+- El script de sincronización ahora despliega todos los archivos de frontend desde una sola lista (incluye `api.js`, `daily-view.jsx`, `finrep-view.jsx`, `app.jsx`, `app-shell.jsx`) y verifica marcas actualizadas.
+
+---
+
 ## [1.15.2] — 2026-05-19
 
 ### 📌 Resumen ejecutivo

@@ -1,9 +1,9 @@
 // app-shell.jsx — Layout, sidebar, bottom nav, helpers UI
 
 // ===== Información de versión global =====
-const APP_VERSION = '1.15.1';  // VERSION_MODAL_V1151
-const APP_BUILD = '2026-05-12T';
-const APP_BUILD_DATE = '12 de mayo de 2026';
+const APP_VERSION = '1.16.0';  // VERSION_MODAL_V1160
+const APP_BUILD = '2026-05-24e';
+const APP_BUILD_DATE = '24 de mayo de 2026';
 const APP_CHANGELOG = [
   { v: '1.15.1', d: '2026-05-12', items: [
     '✨ Ventas adicionales por canal en Corte del día: + DETALLE / + MAYOREO / + DULCERÍA / + MAQUILA + GRAN TOTAL',
