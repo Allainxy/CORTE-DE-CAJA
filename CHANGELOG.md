@@ -63,6 +63,10 @@ Tres mejoras a Movimientos y dos módulos nuevos de análisis.
 
 - `users-view.jsx` invocaba métodos de `KBotAPI` que no existían en `api.js` (commit previo incompleto). Se agregaron los siete métodos faltantes. El backend ya exponía los endpoints correspondientes.
 
+#### Transferencias entre cajas y gestión de cajas — métodos faltantes en `api.js`
+
+- Mismo patrón que el de Usuarios: la transferencia entre cajas fallaba con "KBotAPI.transferir is not a function", y la creación/edición/archivado/borrado de cajas habrían fallado igual. El backend tenía los endpoints (`/api/transferencia`, `/api/cajas`) pero al cliente le faltaban los métodos. Se agregaron a `api.js`: `transferir`, `syncCaja`, `updateCaja`, `archivarCaja`, `deleteCaja`. Se hizo además un cruce completo de todas las llamadas `KBotAPI.*` del frontend contra los métodos definidos para descartar otros huecos.
+
 #### Orden de la lista de Movimientos
 
 - Antes ordenaba solo por `m.fecha` (fecha sin hora), por lo que los movimientos del mismo día quedaban en orden arbitrario y el último capturado no aparecía arriba. Ahora ordena por el timestamp real de ejecución (`created_at` → hora embebida en el id manual → `updated_at` → fecha como respaldo).

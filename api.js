@@ -96,6 +96,24 @@ window.KBotAPI = (function () {
   async function deleteTransfer(tid, pin) {
     return req('/api/transferencia/' + tid, { method: 'DELETE', body: JSON.stringify({ pin }) });
   }
+  // transferir: crea una transferencia entre cajas (2 movimientos vinculados). Online directo.
+  async function transferir(body) {
+    return req('/api/transferencia', { method: 'POST', body: JSON.stringify(body) }); // → { ok, transfer_id, idGasto, idIngreso }
+  }
+  // ── Gestión de cajas (admin, online directo) — endpoints /api/cajas ─────────
+  async function syncCaja(caja) {
+    return req('/api/cajas', { method: 'POST', body: JSON.stringify(caja) });      // crear
+  }
+  async function updateCaja(caja) {
+    return req('/api/cajas/' + caja.id, { method: 'PUT', body: JSON.stringify(caja) }); // editar
+  }
+  async function archivarCaja(id, archivada) {
+    const accion = archivada ? 'archivar' : 'desarchivar';
+    return req('/api/cajas/' + id + '/' + accion, { method: 'POST' });
+  }
+  async function deleteCaja(id) {
+    return req('/api/cajas/' + id, { method: 'DELETE' });
+  }
   async function syncCat(cat) {
     queueAdd({ method: 'POST', path: '/api/cats', body: cat });
     flushQueue();
@@ -169,7 +187,8 @@ window.KBotAPI = (function () {
 
   return {
     enabled, token, user, login, logout,
-    pull, pullFull, syncMov, deleteMov, deleteMovWithPin, deleteTransfer,
+    pull, pullFull, syncMov, deleteMov, deleteMovWithPin, deleteTransfer, transferir,
+    syncCaja, updateCaja, archivarCaja, deleteCaja,
     syncCat, deleteCat, updateCat, syncGroup, deleteGroup, updateGroup,
     reorderGroups, syncBudget, bulkMovs,
     listUsers, createUser, updateUser, deleteUser, resetPassword, generatePin, setUserCajas,
