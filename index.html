@@ -13,7 +13,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="styles.css?v=2026-05-12g" />
 <meta name="api-url" content="https://corte.kbomx.com" />
-<meta name="app-version" content="2026-05-24a" />
+<meta name="app-version" content="2026-05-24b" />
 </head>
 <body>
 <div id="root"></div>
@@ -35,13 +35,44 @@
 <script src="xml.js?v=2026-05-12g"></script>
 <script src="seed.js?v=2026-05-12g"></script>
 <script src="api.js?v=2026-05-12g"></script>
+<script>
+  // Parche aditivo (no destructivo): agrega métodos de gestión de usuarios a
+  // KBotAPI SOLO si no existen ya. users-view.jsx los necesita y faltaban en
+  // api.js. Se definen aquí para desplegar junto con index.html sin tocar api.js
+  // (así no se pisa ninguna versión más nueva que pudiera existir en el servidor).
+  (function () {
+    var API = window.KBotAPI;
+    if (!API) return;
+    var meta = document.querySelector('meta[name="api-url"]');
+    var BASE = (meta && meta.content ? meta.content : '').replace(/\/$/, '');
+    function uReq(path, method, body) {
+      var headers = { 'Content-Type': 'application/json' };
+      var t = localStorage.getItem('kbot_token');
+      if (t) headers.Authorization = 'Bearer ' + t;
+      var opts = { method: method || 'GET', headers: headers };
+      if (body !== undefined) opts.body = JSON.stringify(body);
+      return fetch(BASE + path, opts).then(function (r) {
+        if (r.status === 401) { try { API.logout(); } catch (e) {} throw new Error('Sesión expirada'); }
+        if (!r.ok) return r.json().catch(function () { return {}; }).then(function (e) { throw new Error(e.error || ('Error ' + r.status)); });
+        return r.json();
+      });
+    }
+    if (!API.listUsers)     API.listUsers     = function ()        { return uReq('/api/users'); };
+    if (!API.createUser)    API.createUser    = function (u)       { return uReq('/api/users', 'POST', u); };
+    if (!API.updateUser)    API.updateUser    = function (id, p)   { return uReq('/api/users/' + id, 'PUT', p); };
+    if (!API.deleteUser)    API.deleteUser    = function (id)      { return uReq('/api/users/' + id, 'DELETE'); };
+    if (!API.resetPassword) API.resetPassword = function (id, pwd) { return uReq('/api/users/' + id + '/password', 'POST', { password: pwd }); };
+    if (!API.generatePin)   API.generatePin   = function (id, pin) { return uReq('/api/users/' + id + '/pin', 'POST', pin ? { pin: pin } : {}); };
+    if (!API.setUserCajas)  API.setUserCajas  = function (id, cajas) { return uReq('/api/users/' + id + '/cajas', 'PUT', { cajas: cajas }); };
+  })();
+</script>
 
 <script type="text/babel" src="tweaks-panel.jsx?v=2026-05-12g"></script>
 <script type="text/babel" src="app-shell.jsx?v=2026-05-12T"></script>
 <script type="text/babel" src="login.jsx?v=2026-05-12g"></script>
 <script type="text/babel" src="capture.jsx?v=2026-05-12g"></script>
 <script type="text/babel" src="dashboard.jsx?v=2026-05-12g"></script>
-<script type="text/babel" src="movs-list.jsx?v=2026-05-24a"></script>
+<script type="text/babel" src="movs-list.jsx?v=2026-05-24b"></script>
 <script type="text/babel" src="reports.jsx?v=2026-05-12g"></script>
 <script type="text/babel" src="xml-view.jsx?v=2026-05-12g"></script>
 <script type="text/babel" src="cajas-view.jsx?v=2026-05-12g"></script>

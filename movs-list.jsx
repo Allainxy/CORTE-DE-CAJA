@@ -1,4 +1,6 @@
 // movs-list.jsx — Lista de movimientos con filtros y búsqueda avanzada
+// v2026-05-24b: grid de 8 columnas en escritorio (CAJA/USUARIO sin empalmarse,
+//               acciones en su propia columna) + badge de caja contenido.
 // v2026-05-24a:
 //   • Orden por TIMESTAMP real de ejecución (fecha + hora), no solo por fecha.
 //   • Hora visible en la columna FECHA + separadores por día + marca "ÚLTIMO".
@@ -60,6 +62,22 @@ function injectMovsViewStyles() {
     .movs-view .mt-row--latest { background: var(--primary-soft); box-shadow: inset 3px 0 0 var(--primary); }
     .movs-view .mt-row--latest:hover { background: var(--primary-soft); }
     .movs-view .btn-export[disabled] { opacity: 0.6; cursor: default; }
+    /* Grid de 8 columnas en escritorio: CAJA y USUARIO ya no se empalman y
+       las acciones (✎ 🗑) tienen su propia columna en lugar de envolverse abajo.
+       Acotado a min-width:881px para NO pisar el layout móvil (max-width:880px). */
+    @media (min-width: 881px) {
+      .movs-view .mt-head,
+      .movs-view .mt-row {
+        grid-template-columns: 112px 48px minmax(140px, 1.1fr) minmax(180px, 1.5fr) 156px 120px 104px 56px;
+      }
+    }
+    /* Contener el badge de caja dentro de su columna (sin desbordar a USUARIO) */
+    .movs-view .caja-cell { min-width: 0; overflow: hidden; }
+    .movs-view .caja-cell .caja-dot { max-width: 100%; min-width: 0; }
+    .movs-view .caja-cell .caja-dot > span:last-child {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+    }
+    .movs-view .actions-cell { min-width: 0; }
   `;
   document.head.appendChild(s);
 }
