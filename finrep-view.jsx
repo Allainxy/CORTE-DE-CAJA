@@ -224,8 +224,9 @@ const FinrepView = ({ movs = [], cats = [], groups = [], cajas = [], user }) => 
 
     rows.forEach(m => {
       const cat = m.categoria || 'SIN CATEGORÍA';
-      let sec = sectionOf(cat);
-      if (m.transfer_id) sec = 'transfer';
+      const noAfecta = (m.afecta_saldo === 0 || m.afecta_saldo === false);
+      let sec = noAfecta ? 'noafecta' : sectionOf(cat);
+      if (!noAfecta && m.transfer_id) sec = 'transfer';
       const g = groupOfCat(cat);
       const gKey = g ? g.id : SIN_GRUPO;
       const monto = Number(m.monto) || 0;
@@ -238,7 +239,8 @@ const FinrepView = ({ movs = [], cats = [], groups = [], cajas = [], user }) => 
       if (col) {
         grp.cats[cat].byCol[col.key] = (grp.cats[cat].byCol[col.key] || 0) + monto;
         grp.byCol[col.key] = (grp.byCol[col.key] || 0) + monto;
-        colTotals[col.key][sec] += monto;
+        // 'noafecta' NO se suma a colTotals: es informativo y no toca el flujo.
+        if (sec !== 'noafecta') colTotals[col.key][sec] += monto;
       }
       grp.cats[cat].total += monto; grp.cats[cat].count++;
       grp.total += monto;
@@ -251,8 +253,23 @@ const FinrepView = ({ movs = [], cats = [], groups = [], cajas = [], user }) => 
         if (oa !== ob) return oa - ob;
         return b.total - a.total;
       });
-    const sectionTotalByCol = (sec) => { const o = {}; cols.forEach(c => { o[c.key] = colTotals[c.key][sec]; }); return o; };
-    const sectionGrand = (sec) => Object.values(colTotals).reduce((s, v) => s + v[sec], 0);
+    const sectionTotalByCol = (sec) => {
+      const o = {};
+      if (colTotals[cols[0]?.key] && (sec in colTotals[cols[0].key])) {
+        cols.forEach(c => { o[c.key] = colTotals[c.key][sec]; });
+      } else {
+        // sección fuera del flujo (noafecta): sumar desde acc
+        cols.forEach(c => { o[c.key] = 0; });
+        Object.values(acc[sec] || {}).forEach(g => { cols.forEach(c => { o[c.key] += (g.byCol[c.key] || 0); }); });
+      }
+      return o;
+    };
+    const sectionGrand = (sec) => {
+      if (colTotals[cols[0]?.key] && (sec in colTotals[cols[0].key])) {
+        return Object.values(colTotals).reduce((s, v) => s + v[sec], 0);
+      }
+      return Object.values(acc[sec] || {}).reduce((s, g) => s + g.total, 0);
+    };
 
     return { cols, sectionGroups, sectionTotalByCol, sectionGrand };
   }, [movs, classif, periodo, anio, mes, semana, desde, hasta, catMap, groupMap]);
@@ -321,6 +338,7 @@ const FinrepView = ({ movs = [], cats = [], groups = [], cajas = [], user }) => 
     aoa.push(['FLUJO OPERATIVO', ...cols.map(c => model.sectionTotalByCol('ingreso')[c.key] - model.sectionTotalByCol('costo')[c.key] - model.sectionTotalByCol('gasto')[c.key]), fo]);
     aoa.push([]);
     pushSection('transfer', 'TRANSFERENCIAS / OTROS (informativo)', 1);
+    pushSection('noafecta', 'NO AFECTA SALDO (informativo · ya descontado del efectivo)', -1);
     const ws = XLSX.utils.aoa_to_sheet(aoa);
     ws['!cols'] = [{ wch: 40 }, ...cols.map(() => ({ wch: 14 })), { wch: 16 }];
     const wb = XLSX.utils.book_new();
@@ -508,6 +526,7 @@ const FinrepView = ({ movs = [], cats = [], groups = [], cajas = [], user }) => 
             </tr>
             <tr><td colSpan={cols.length + 2} style={{ height: 10, border: 'none', background: 'transparent' }}></td></tr>
             <SectionBlock secId="transfer" label="TRANSFERENCIAS / OTROS (informativo · no afecta el flujo)" tone="info" sign={1} />
+            <SectionBlock secId="noafecta" label="NO AFECTA SALDO (informativo · ya descontado del efectivo entregado)" tone="info" sign={-1} />
           </tbody>
         </table>
       </div>

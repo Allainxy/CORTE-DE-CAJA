@@ -90,6 +90,10 @@ Tres mejoras a Movimientos y dos módulos nuevos de análisis.
 - React cambiado de build de desarrollo a producción (con SRI verificado).
 - Se eliminó la carga eager de `xlsx.full.min.js` (~900 KB) en el arranque.
 
+#### Resumen por día y Reporte Financiero — movimientos que no afectan el saldo
+
+- Los movimientos marcados como "no afecta saldo" (`afecta_saldo = 0`) —gastos que el vendedor ya descontó del efectivo entregado— ya no se suman a los totales ni subtotales de ambos módulos (antes se contaban doble). Ahora se muestran en un bloque informativo aparte: en Resumen por día, una sección "ⓘ NO AFECTA SALDO" dentro de cada día; en Reporte Financiero, una sección informativa "NO AFECTA SALDO" que no toca el Flujo Operativo. Mismo criterio que la lista de Movimientos.
+
 #### `sync-frontend-files.sh`
 
 - El script de sincronización ahora despliega todos los archivos de frontend desde una sola lista (incluye `api.js`, `daily-view.jsx`, `finrep-view.jsx`, `app.jsx`, `app-shell.jsx`) y verifica marcas actualizadas.

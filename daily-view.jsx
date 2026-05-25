@@ -53,6 +53,11 @@
     }
     .daily-view .dv-subtotal .dv-sub-label { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.06em; }
     .daily-view .dv-empty { padding: 30px; text-align: center; opacity: 0.6; }
+    .daily-view .dv-info { border-top: 1px dashed var(--line); background: #F4F6FF; }
+    .daily-view .dv-info-head { padding: 7px 16px; font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.06em; font-weight: 700; color: #3730A3; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+    .daily-view .dv-info-note { font-weight: 400; opacity: 0.65; letter-spacing: 0; font-size: 10px; }
+    .daily-view .dv-info-row { opacity: 0.9; }
+    .daily-view .dv-info-amt { color: #6366F1; font-style: italic; }
     .daily-view .btn-export[disabled] { opacity: 0.6; cursor: default; }
     @media (max-width: 700px) {
       .daily-view .dv-row, .daily-view .dv-rowhead, .daily-view .dv-subtotal {
@@ -101,16 +106,32 @@ const DailyView = ({ movs = [], cats = [], cajas = [] }) => {
     return r;
   }, [movs, from, to]);
 
-  // Agrupar por día → por categoría
+  // Un movimiento "no afecta saldo" cuando afecta_saldo es 0/false (igual que en
+  // Movimientos): es un gasto que el vendedor ya descontó del efectivo entregado,
+  // por lo que NO debe sumarse al resumen (se doble-contaría). Se muestra aparte.
+  const noAfecta = (m) => (m.afecta_saldo === 0 || m.afecta_saldo === false);
+
+  // Agrupar por día → por categoría (solo lo que afecta saldo cuenta en los totales)
   const dias = useMemo(() => {
     const byDay = {};
     filtered.forEach(m => {
       const f = m.fecha || 'sin-fecha';
-      if (!byDay[f]) byDay[f] = { fecha: f, cats: {}, ingresos: 0, egresos: 0 };
+      if (!byDay[f]) byDay[f] = { fecha: f, cats: {}, ingresos: 0, egresos: 0, info: {}, infoTotal: 0, infoCount: 0 };
       const d = byDay[f];
       const cat = m.categoria || 'SIN CATEGORÍA';
-      if (!d.cats[cat]) d.cats[cat] = { categoria: cat, ingresos: 0, egresos: 0, count: 0 };
       const monto = Number(m.monto) || 0;
+
+      if (noAfecta(m)) {
+        // Bloque informativo: NO suma a ingresos/egresos del día.
+        if (!d.info[cat]) d.info[cat] = { categoria: cat, monto: 0, count: 0 };
+        d.info[cat].monto += monto;
+        d.info[cat].count++;
+        d.infoTotal += monto;
+        d.infoCount++;
+        return;
+      }
+
+      if (!d.cats[cat]) d.cats[cat] = { categoria: cat, ingresos: 0, egresos: 0, count: 0 };
       if (m.tipo === 'INGRESO') { d.cats[cat].ingresos += monto; d.ingresos += monto; }
       else { d.cats[cat].egresos += monto; d.egresos += monto; }
       d.cats[cat].count++;
@@ -120,17 +141,19 @@ const DailyView = ({ movs = [], cats = [], cajas = [] }) => {
       .map(d => ({
         ...d,
         neto: d.ingresos - d.egresos,
-        lineas: Object.values(d.cats).sort((a, b) => (b.ingresos + b.egresos) - (a.ingresos + a.egresos))
+        lineas: Object.values(d.cats).sort((a, b) => (b.ingresos + b.egresos) - (a.ingresos + a.egresos)),
+        infoLineas: Object.values(d.info).sort((a, b) => b.monto - a.monto)
       }));
   }, [filtered]);
 
   const grand = useMemo(() => {
-    let ing = 0, gas = 0;
+    let ing = 0, gas = 0, info = 0, infoCount = 0;
     filtered.forEach(m => {
       const v = Number(m.monto) || 0;
+      if (noAfecta(m)) { info += v; infoCount++; return; }
       if (m.tipo === 'INGRESO') ing += v; else gas += v;
     });
-    return { ing, gas, neto: ing - gas, dias: dias.length, count: filtered.length };
+    return { ing, gas, neto: ing - gas, info, infoCount, dias: dias.length, count: filtered.length };
   }, [filtered, dias]);
 
   const dayHeading = (iso) => {
@@ -209,6 +232,7 @@ const DailyView = ({ movs = [], cats = [], cajas = [] }) => {
         <span className="dv-band-kv">TOTAL INGRESOS <b className="dv-pos">{fmtMXN(grand.ing)}</b></span>
         <span className="dv-band-kv">TOTAL EGRESOS <b className="dv-neg">{fmtMXN(grand.gas)}</b></span>
         <span className="dv-band-kv">{grand.count} movimientos</span>
+        {grand.infoCount > 0 && <span className="dv-band-kv" style={{ opacity: 0.7 }}>+{grand.infoCount} no afecta saldo ({fmtMXN(grand.info)})</span>}
       </div>
 
       <BotanaCard className="filter-bar">
@@ -262,6 +286,28 @@ const DailyView = ({ movs = [], cats = [], cajas = [] }) => {
             <div className="dv-num dv-pos">+{fmtMXN(d.ingresos)}</div>
             <div className="dv-num dv-neg">−{fmtMXN(d.egresos)}</div>
           </div>
+          {d.infoLineas && d.infoLineas.length > 0 && (
+            <div className="dv-info">
+              <div className="dv-info-head">
+                ⓘ NO AFECTA SALDO · informativo
+                <span className="dv-info-note">estos gastos ya fueron descontados del efectivo entregado — no se suman al resumen</span>
+              </div>
+              {d.infoLineas.map(l => {
+                const c = catMap[l.categoria];
+                return (
+                  <div key={l.categoria} className="dv-row dv-info-row">
+                    <div className="dv-cat">
+                      <span className="dv-dot" style={{ background: c?.color || '#888' }}>{c?.icon || '•'}</span>
+                      <span className="dv-cat-name">{l.categoria}</span>
+                      <span className="dv-count">×{l.count}</span>
+                    </div>
+                    <div className="dv-num zero">—</div>
+                    <div className="dv-num dv-info-amt">({fmtMXN(l.monto)})</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </BotanaCard>
       ))}
     </div>
