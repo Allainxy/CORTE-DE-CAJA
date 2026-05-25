@@ -72,7 +72,9 @@ Tres mejoras a Movimientos y dos módulos nuevos de análisis.
 
 #### Categorías sin grupo no aparecían en Categorías y Presupuestos
 
-- Las categorías creadas por los módulos (Ventas, Nómina, Viáticos) cuyo `group_id` apuntaba a un grupo inexistente, borrado o de otro tipo no se mostraban en la pantalla de Categorías: el render solo recorría los grupos activos más el bucket `_none` (group_id nulo), por lo que estas categorías quedaban "perdidas" (visibles en el Reporte Financiero como "Sin grupo" pero no editables). Ahora cualquier categoría cuyo grupo no sea un grupo activo del mismo tipo se muestra en el bloque **"⚠️ SIN GRUPO ASIGNADO"** (resaltado), desde donde se le puede asignar un grupo con el botón de editar.
+- **Causa real:** algunos módulos (Nómina, Ventas, Viáticos) registran movimientos con un nombre de categoría pero solo crean el registro en la tabla `cats` cuando encuentran el grupo destino. Si el grupo no existía en ese momento, la categoría quedaba **sin ningún registro en `cats`** — visible en Movimientos y en el Reporte Financiero (que lee el nombre desde `movs`) pero ausente de la pantalla de Categorías (que lee la tabla `cats`).
+- **Fix backend (backfill idempotente):** al arrancar, el servidor crea en `cats` un registro por cada `(tipo, categoría)` que aparezca en `movs` y no exista en `cats`, con `group_id = NULL`. El frontend los recibe en el siguiente sync.
+- **Fix frontend:** además, las categorías cuyo `group_id` apunta a un grupo inexistente, borrado o de otro tipo ahora se muestran en el bloque **"⚠️ SIN GRUPO ASIGNADO"** (resaltado), desde donde se les asigna grupo con el botón de editar. Antes el render solo recorría los grupos activos más el bucket de `group_id` nulo, por lo que estas categorías quedaban invisibles.
 
 ### 🔧 Changed
 

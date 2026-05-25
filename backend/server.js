@@ -442,6 +442,42 @@ if (!groupsCols.includes('import_id')) {
   db.exec(`ALTER TABLE groups ADD COLUMN import_id TEXT`);
 }
 
+// ─── Migración: backfill de categorías "fantasma" ───────────────────────────
+// Algunos módulos (Nómina, Ventas, Viáticos) registran movimientos con un
+// nombre de categoría pero solo crean el registro en `cats` cuando encuentran
+// el grupo destino; si el grupo no existía, la categoría quedaba SIN registro
+// en `cats` (visible en movimientos/reportes pero no en Categorías). Este
+// backfill crea esos registros faltantes con group_id = NULL para que aparezcan
+// en el bloque "SIN GRUPO ASIGNADO" y se les pueda asignar grupo. Idempotente.
+try {
+  const faltantes = db.prepare(`
+    SELECT DISTINCT m.tipo AS tipo, m.categoria AS nombre
+    FROM movs m
+    WHERE m.deleted = 0
+      AND m.categoria IS NOT NULL AND TRIM(m.categoria) <> ''
+      AND m.tipo IN ('INGRESO','GASTO')
+      AND NOT EXISTS (
+        SELECT 1 FROM cats c
+        WHERE c.deleted = 0 AND c.tipo = m.tipo AND c.nombre = m.categoria
+      )
+  `).all();
+  if (faltantes.length > 0) {
+    const nowBf = Date.now();
+    const insBf = db.prepare(`INSERT INTO cats (id, tipo, nombre, color, icon, group_id, updated_at, deleted)
+      VALUES (?, ?, ?, ?, ?, NULL, ?, 0)`);
+    let n = 0;
+    for (const f of faltantes) {
+      const color = f.tipo === 'INGRESO' ? '#10B981' : '#6B7280';
+      const icon = f.tipo === 'INGRESO' ? '💰' : '📌';
+      const id = 'cat-bf-' + nowBf + '-' + (n++);
+      insBf.run(id, f.tipo, f.nombre, color, icon, nowBf);
+    }
+    console.log(`🔧 Migración: ${faltantes.length} categoría(s) fantasma creadas en cats (sin grupo) para asignación manual`);
+  }
+} catch (e) {
+  console.error('⚠️  Backfill de categorías fantasma falló (no crítico):', e.message);
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
