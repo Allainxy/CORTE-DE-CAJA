@@ -1,26 +1,20 @@
 #!/usr/bin/env bash
 # ============================================================================
-# K-BOTANAS · Hotfix sincronización VPS
+# K-BOTANAS · Sincronización frontend VPS
 # ============================================================================
-# Resuelve dos problemas detectados:
-#   1. El archivo VIVO está en /var/www/corte.kbomx.com/ pero deploy.sh
-#      sincroniza a /opt/corte-kbomx/public/. Por eso los cambios no se ven.
-#   2. /var/www/corte.kbomx.com/movs-list.jsx era una versión más nueva
-#      (con columna CAJA, filtros, permisos) que NO estaba en git.
-#
-# QUÉ HACE ESTE SCRIPT:
-# - Copia movs-list.jsx (versión nueva con export Excel + proveedor + todo lo
-#   que ya estaba vivo en prod) y index.html a /var/www/corte.kbomx.com/
-# - También a /opt/corte-kbomx/public/ por consistencia
-# - Hace backup de los archivos actuales antes de pisar
-# - Corrige permisos para nginx (www-data)
+# Copia los archivos de frontend a /var/www/corte.kbomx.com/ (lo que nginx
+# sirve) y a /opt/corte-kbomx/public/ (consistencia con deploy.sh), con backup
+# previo y permisos www-data.
 #
 # USO (desde tu PC, en PowerShell):
-#   scp movs-list.jsx index.html sync-frontend-files.sh root@kbomx-erp-prod:/tmp/
-#   ssh root@kbomx-erp-prod "bash /tmp/sync-frontend-files.sh"
+#   scp $(echo movs-list.jsx index.html api.js) sync-frontend-files.sh root@142.93.177.198:/tmp/
+#   ssh root@142.93.177.198 "bash /tmp/sync-frontend-files.sh"
 # ============================================================================
 
 set -e
+
+# Archivos a desplegar (agrega aquí si en el futuro hay más)
+FILES="movs-list.jsx index.html api.js"
 
 TS=$(date +%F-%H%M)
 BACKUP_DIR="/opt/corte-kbomx/backups/frontend-${TS}"
@@ -31,11 +25,12 @@ PUBLIC_DIR="/opt/corte-kbomx/public"
 
 echo "═══════════════════════════════════════════════════════════════"
 echo "  Sincronización frontend · $TS"
+echo "  Archivos: $FILES"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 
 # Validar que los archivos nuevos estén en /tmp
-for f in movs-list.jsx index.html; do
+for f in $FILES; do
   if [ ! -f "/tmp/$f" ]; then
     echo "❌ Falta /tmp/$f. Súbelo con scp primero."
     exit 1
@@ -51,52 +46,47 @@ for d in "$NGINX_ROOT" "$PUBLIC_DIR"; do
 done
 
 echo "[1/4] Backup de archivos actuales..."
-for f in movs-list.jsx index.html; do
-  if [ -f "$NGINX_ROOT/$f" ]; then
-    cp "$NGINX_ROOT/$f" "$BACKUP_DIR/${f}.nginx-root"
-    echo "    ✓ $NGINX_ROOT/$f → $BACKUP_DIR/${f}.nginx-root"
-  fi
-  if [ -f "$PUBLIC_DIR/$f" ]; then
-    cp "$PUBLIC_DIR/$f" "$BACKUP_DIR/${f}.public"
-    echo "    ✓ $PUBLIC_DIR/$f → $BACKUP_DIR/${f}.public"
-  fi
+for f in $FILES; do
+  [ -f "$NGINX_ROOT/$f" ] && cp "$NGINX_ROOT/$f" "$BACKUP_DIR/${f}.nginx-root" && echo "    ✓ $NGINX_ROOT/$f → backup"
+  [ -f "$PUBLIC_DIR/$f" ] && cp "$PUBLIC_DIR/$f" "$BACKUP_DIR/${f}.public" && echo "    ✓ $PUBLIC_DIR/$f → backup"
 done
 echo ""
 
-echo "[2/4] Copiando archivos nuevos a $NGINX_ROOT/ (lo que nginx sirve)..."
-cp /tmp/movs-list.jsx "$NGINX_ROOT/movs-list.jsx"
-cp /tmp/index.html "$NGINX_ROOT/index.html"
-chown www-data:www-data "$NGINX_ROOT/movs-list.jsx" "$NGINX_ROOT/index.html"
-chmod 644 "$NGINX_ROOT/movs-list.jsx" "$NGINX_ROOT/index.html"
-echo "    ✓ Copiados con permisos www-data:www-data 644"
+echo "[2/4] Copiando a $NGINX_ROOT/ (lo que nginx sirve)..."
+for f in $FILES; do
+  cp "/tmp/$f" "$NGINX_ROOT/$f"
+  chown www-data:www-data "$NGINX_ROOT/$f"
+  chmod 644 "$NGINX_ROOT/$f"
+  echo "    ✓ $f (www-data:www-data 644)"
+done
 echo ""
 
 echo "[3/4] Copiando también a $PUBLIC_DIR/ (consistencia con deploy.sh)..."
-cp /tmp/movs-list.jsx "$PUBLIC_DIR/movs-list.jsx"
-cp /tmp/index.html "$PUBLIC_DIR/index.html"
-echo "    ✓ Copiados"
+for f in $FILES; do
+  cp "/tmp/$f" "$PUBLIC_DIR/$f"
+  echo "    ✓ $f"
+done
 echo ""
 
 echo "[4/4] Verificación..."
 echo "    NGINX_ROOT:"
-echo "      movs-list.jsx tiene 'EXPORTAR EXCEL': $(grep -c 'EXPORTAR EXCEL' "$NGINX_ROOT/movs-list.jsx")"
-echo "      movs-list.jsx tiene columna CAJA: $(grep -c 'caja-cell' "$NGINX_ROOT/movs-list.jsx")"
-echo "      index.html tiene sheetjs: $(grep -c 'sheetjs' "$NGINX_ROOT/index.html")"
-echo ""
-echo "    PUBLIC_DIR:"
-echo "      movs-list.jsx tiene 'EXPORTAR EXCEL': $(grep -c 'EXPORTAR EXCEL' "$PUBLIC_DIR/movs-list.jsx")"
-echo "      index.html tiene sheetjs: $(grep -c 'sheetjs' "$PUBLIC_DIR/index.html")"
+echo "      api.js tiene listUsers: $(grep -c 'listUsers' "$NGINX_ROOT/api.js")"
+echo "      movs-list.jsx tiene separadores por día: $(grep -c 'mt-daygroup' "$NGINX_ROOT/movs-list.jsx")"
+echo "      index.html usa React producción: $(grep -c 'react.production.min.js' "$NGINX_ROOT/index.html")"
+echo "      index.html NO carga xlsx eager (debe ser 0): $(grep -c 'xlsx.full.min.js\"' "$NGINX_ROOT/index.html")"
 echo ""
 
 echo "═══════════════════════════════════════════════════════════════"
 echo "  ✅ Sincronizado · $TS"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
-echo "🌐 Ahora abre corte.kbomx.com con Ctrl+Shift+R y busca el botón"
-echo "   '📊 EXPORTAR EXCEL' arriba a la derecha en Movimientos."
+echo "🌐 Abre corte.kbomx.com con Ctrl+Shift+R."
+echo "   • Usuarios debe listar sin error."
+echo "   • En Movimientos: orden por fecha/hora, separadores por día y marca ÚLTIMO."
 echo ""
 echo "🔄 ROLLBACK si algo sale mal:"
-echo "   cp $BACKUP_DIR/movs-list.jsx.nginx-root $NGINX_ROOT/movs-list.jsx"
-echo "   cp $BACKUP_DIR/index.html.nginx-root $NGINX_ROOT/index.html"
-echo "   chown www-data:www-data $NGINX_ROOT/*.jsx $NGINX_ROOT/*.html"
+for f in $FILES; do
+  echo "   cp $BACKUP_DIR/${f}.nginx-root $NGINX_ROOT/$f"
+done
+echo "   chown www-data:www-data $NGINX_ROOT/*.jsx $NGINX_ROOT/*.html $NGINX_ROOT/*.js"
 echo ""

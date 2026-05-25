@@ -133,6 +133,30 @@ window.KBotAPI = (function () {
     flushQueue();
   }
 
+  // ── Gestión de usuarios (admin) — endpoints /api/users del backend ──────────
+  // Operaciones online directas (no usan la cola offline). users-view.jsx las usa.
+  function listUsers() {
+    return req('/api/users');                                   // → { users: [...] }
+  }
+  function createUser(u) {
+    return req('/api/users', { method: 'POST', body: JSON.stringify(u) }); // → { ok, id }
+  }
+  function updateUser(id, patch) {
+    return req('/api/users/' + id, { method: 'PUT', body: JSON.stringify(patch) }); // → { ok }
+  }
+  function deleteUser(id) {
+    return req('/api/users/' + id, { method: 'DELETE' });       // → { ok }
+  }
+  function resetPassword(id, password) {
+    return req('/api/users/' + id + '/password', { method: 'POST', body: JSON.stringify({ password }) }); // → { ok }
+  }
+  function generatePin(id, pin) {
+    return req('/api/users/' + id + '/pin', { method: 'POST', body: JSON.stringify(pin ? { pin } : {}) }); // → { ok, pin }
+  }
+  function setUserCajas(id, cajas) {
+    return req('/api/users/' + id + '/cajas', { method: 'PUT', body: JSON.stringify({ cajas }) }); // → { ok }
+  }
+
   window.addEventListener('online', () => flushQueue());
 
   return {
@@ -140,6 +164,7 @@ window.KBotAPI = (function () {
     pull, pullFull, syncMov, deleteMov, deleteMovWithPin, deleteTransfer,
     syncCat, deleteCat, updateCat, syncGroup, deleteGroup, updateGroup,
     reorderGroups, syncBudget, bulkMovs,
+    listUsers, createUser, updateUser, deleteUser, resetPassword, generatePin, setUserCajas,
     flushQueue, queueGet
   };
 })();
