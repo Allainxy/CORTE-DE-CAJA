@@ -40,6 +40,7 @@ Tres mejoras a Movimientos y dos módulos nuevos de análisis.
 
 - Nueva vista (`active === 'finrep'`) accesible desde el menú lateral.
 - Periodos seleccionables: Semana / Mes / Año, con columnas semanales (o mensuales en vista anual).
+- Modo **Rango** con selector de fechas (calendario DESDE / HASTA): filtra el reporte por un rango libre y genera columnas semanales que cubren el periodo (o una sola columna TOTAL si el rango supera 14 semanas).
 - Cuatro secciones: Ingresos, Costo de venta, Gastos, Transferencias/Otros. Filas derivadas Utilidad Bruta y Flujo Operativo.
 - Clasificación categoría→sección por drag & drop; dentro de cada sección las categorías se anidan por grupo contable (`group_id`) con subtotal por grupo y grupos colapsables.
 - Transferencias detectadas por `transfer_id` se ubican automáticamente en la sección informativa.

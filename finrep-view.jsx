@@ -91,12 +91,53 @@ function frEnsureXLSX() {
 }
 
 const frWeekOfMonth = (iso) => { const d = parseInt((iso || '').split('-')[2] || '0', 10); return d ? Math.ceil(d / 7) : 0; };
+
+// Convierte 'YYYY-MM-DD' a Date local (mediodía para evitar saltos por zona horaria)
+const frToDate = (iso) => new Date(iso + 'T12:00:00');
+const frIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+// Lunes de la semana de una fecha
+const frMonday = (d) => { const x = new Date(d); const day = (x.getDay() + 6) % 7; x.setDate(x.getDate() - day); return x; };
+
+// Genera columnas semanales (lun→dom) que cubren [desde, hasta]. Si no hay
+// fechas, deriva el rango de los movimientos. Si hay demasiadas semanas (>14),
+// colapsa a una sola columna TOTAL para mantener la tabla legible.
+function frRangeWeekCols(desde, hasta, rows) {
+  let dMin = desde, dMax = hasta;
+  if ((!dMin || !dMax) && rows.length) {
+    const fechas = rows.map(m => m.fecha).filter(Boolean).sort();
+    if (!dMin) dMin = fechas[0];
+    if (!dMax) dMax = fechas[fechas.length - 1];
+  }
+  if (!dMin || !dMax) return [{ key: 'wk', label: 'TOTAL PERIODO', test: () => true }];
+  if (dMin > dMax) { const t = dMin; dMin = dMax; dMax = t; }
+
+  const start = frMonday(frToDate(dMin));
+  const endD = frToDate(dMax);
+  const cols = [];
+  let cur = new Date(start);
+  let guard = 0;
+  while (cur <= endD && guard < 60) {
+    const wkStart = new Date(cur);
+    const wkEnd = new Date(cur); wkEnd.setDate(wkEnd.getDate() + 6);
+    const sIso = frIso(wkStart), eIso = frIso(wkEnd);
+    const label = `${wkStart.getDate()}/${wkStart.getMonth() + 1}–${wkEnd.getDate()}/${wkEnd.getMonth() + 1}`;
+    cols.push({ key: 'r' + sIso, label, test: (m) => m.fecha >= sIso && m.fecha <= eIso });
+    cur.setDate(cur.getDate() + 7);
+    guard++;
+  }
+  if (cols.length === 0 || cols.length > 14) {
+    return [{ key: 'wk', label: 'TOTAL PERIODO', test: () => true }];
+  }
+  return cols;
+}
 const MESES = ['ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'AGO', 'SEP', 'OCT', 'NOV', 'DIC'];
 const MESES_LARGO = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
 const FinrepView = ({ movs = [], cats = [], groups = [], cajas = [], user }) => {
   const now = new Date();
-  const [periodo, setPeriodo] = useState('mes');
+  const [periodo, setPeriodo] = useState('mes'); // 'semana' | 'mes' | 'anio' | 'rango'
+  const [desde, setDesde] = useState('');
+  const [hasta, setHasta] = useState('');
   const [anio, setAnio] = useState(now.getFullYear());
   const [mes, setMes] = useState(now.getMonth());
   const [semana, setSemana] = useState(Math.ceil(now.getDate() / 7) || 1);
@@ -151,6 +192,12 @@ const FinrepView = ({ movs = [], cats = [], groups = [], cajas = [], user }) => 
     if (!classif) return null;
     const inRange = (m) => {
       const f = m.fecha || '';
+      if (periodo === 'rango') {
+        if (!desde && !hasta) return true;
+        if (desde && f < desde) return false;
+        if (hasta && f > hasta) return false;
+        return true;
+      }
       const y = parseInt(f.slice(0, 4), 10);
       const mo = parseInt(f.slice(5, 7), 10) - 1;
       if (y !== anio) return false;
@@ -164,7 +211,12 @@ const FinrepView = ({ movs = [], cats = [], groups = [], cajas = [], user }) => 
     let cols = [];
     if (periodo === 'anio') cols = MESES.map((mm, i) => ({ key: 'm' + i, label: mm, test: (m) => parseInt(m.fecha.slice(5, 7), 10) - 1 === i }));
     else if (periodo === 'mes') cols = [1, 2, 3, 4, 5].map(w => ({ key: 'w' + w, label: 'SEM ' + w, test: (m) => frWeekOfMonth(m.fecha) === w }));
-    else cols = [{ key: 'wk', label: 'SEM ' + semana, test: () => true }];
+    else if (periodo === 'semana') cols = [{ key: 'wk', label: 'SEM ' + semana, test: () => true }];
+    else {
+      // RANGO: columnas semanales (lunes→domingo) que cubren [desde, hasta].
+      // Si el rango es muy largo (>14 semanas) se colapsa a una sola columna TOTAL.
+      cols = frRangeWeekCols(desde, hasta, rows);
+    }
 
     // sec -> grupoKey -> { group, cats: {catNombre -> {byCol,total,count}}, total, byCol }
     const acc = {};
@@ -203,7 +255,7 @@ const FinrepView = ({ movs = [], cats = [], groups = [], cajas = [], user }) => 
     const sectionGrand = (sec) => Object.values(colTotals).reduce((s, v) => s + v[sec], 0);
 
     return { cols, sectionGroups, sectionTotalByCol, sectionGrand };
-  }, [movs, classif, periodo, anio, mes, semana, catMap, groupMap]);
+  }, [movs, classif, periodo, anio, mes, semana, desde, hasta, catMap, groupMap]);
 
   // ---- Panel config: categorías agrupadas por grupo dentro de cada sección ----
   const allCatNames = useMemo(() => {
@@ -237,7 +289,10 @@ const FinrepView = ({ movs = [], cats = [], groups = [], cajas = [], user }) => 
   };
 
   const fmt = (n) => fmtMXN(Math.abs(n || 0));
-  const periodoLabel = periodo === 'anio' ? `Año ${anio}` : periodo === 'mes' ? `${MESES_LARGO[mes]} ${anio}` : `Semana ${semana} · ${MESES_LARGO[mes]} ${anio}`;
+  const periodoLabel = periodo === 'anio' ? `Año ${anio}`
+    : periodo === 'mes' ? `${MESES_LARGO[mes]} ${anio}`
+    : periodo === 'semana' ? `Semana ${semana} · ${MESES_LARGO[mes]} ${anio}`
+    : (desde || hasta) ? `${desde || '…'} a ${hasta || '…'}` : 'Rango (todo el histórico)';
 
   // ---- Export ----
   const exportXLSX = async () => {
@@ -349,16 +404,18 @@ const FinrepView = ({ movs = [], cats = [], groups = [], cajas = [], user }) => 
       <BotanaCard className="filter-bar">
         <div className="fr-controls">
           <div className="fr-seg">
-            {[['semana', 'SEMANA'], ['mes', 'MES'], ['anio', 'AÑO']].map(([id, lb]) => (
+            {[['semana', 'SEMANA'], ['mes', 'MES'], ['anio', 'AÑO'], ['rango', 'RANGO']].map(([id, lb]) => (
               <button key={id} className={periodo === id ? 'active' : ''} onClick={() => setPeriodo(id)}>{lb}</button>
             ))}
           </div>
-          <label>AÑO
-            <select value={anio} onChange={e => setAnio(+e.target.value)} className="text-input compact">
-              {[now.getFullYear(), now.getFullYear() - 1, now.getFullYear() - 2].map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
-          </label>
-          {periodo !== 'anio' && (
+          {periodo !== 'rango' && (
+            <label>AÑO
+              <select value={anio} onChange={e => setAnio(+e.target.value)} className="text-input compact">
+                {[now.getFullYear(), now.getFullYear() - 1, now.getFullYear() - 2].map(y => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </label>
+          )}
+          {(periodo === 'mes' || periodo === 'semana') && (
             <label>MES
               <select value={mes} onChange={e => setMes(+e.target.value)} className="text-input compact">
                 {MESES_LARGO.map((m, i) => <option key={i} value={i}>{m}</option>)}
@@ -371,6 +428,17 @@ const FinrepView = ({ movs = [], cats = [], groups = [], cajas = [], user }) => 
                 {[1, 2, 3, 4, 5].map(w => <option key={w} value={w}>Semana {w}</option>)}
               </select>
             </label>
+          )}
+          {periodo === 'rango' && (
+            <>
+              <label>DESDE
+                <input type="date" value={desde} onChange={e => setDesde(e.target.value)} className="text-input compact" />
+              </label>
+              <label>HASTA
+                <input type="date" value={hasta} onChange={e => setHasta(e.target.value)} className="text-input compact" />
+              </label>
+              {(desde || hasta) && <button className="btn-ghost" onClick={() => { setDesde(''); setHasta(''); }}>LIMPIAR</button>}
+            </>
           )}
           <span className="fr-hint">Mostrando: <b>{periodoLabel}</b> · la caja se filtra con el selector de arriba.</span>
         </div>
