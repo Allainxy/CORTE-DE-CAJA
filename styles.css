@@ -137,7 +137,23 @@ h1, h2, h3, h4 { font-family: var(--f-display); margin: 0; letter-spacing: -0.01
   margin-top: 2px;
 }
 
-.sidebar-nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.sidebar-nav {
+  display: flex; flex-direction: column; gap: 4px; flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  /* scrollbar delgado y discreto sobre el fondo oscuro del menú */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.25) transparent;
+  padding-right: 2px;
+}
+.sidebar-nav::-webkit-scrollbar { width: 7px; }
+.sidebar-nav::-webkit-scrollbar-track { background: transparent; }
+.sidebar-nav::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.22);
+  border-radius: 4px;
+}
+.sidebar-nav::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.4); }
 .nav-item {
   display: flex; align-items: center; gap: 12px;
   padding: 11px 12px;

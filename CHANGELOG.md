@@ -59,7 +59,11 @@ Tres mejoras a Movimientos y dos módulos nuevos de análisis.
 
 #### Sincronización entre usuarios — botón Actualizar + auto-sync
 
-- Antes los cambios de un usuario no los veía otro hasta recargar la página (el sync solo corría una vez al cargar). Ahora hay un botón **"↻ ACTUALIZAR"** en la barra superior que trae al instante los últimos cambios del servidor, y un **auto-sync incremental cada 30 segundos** (ligero, usa el cursor `since`) que también se dispara al volver a enfocar la pestaña. Así los cambios entre usuarios se propagan solos sin recargar.
+- Antes los cambios de un usuario no los veía otro hasta recargar la página (el sync solo corría una vez al cargar). Ahora hay un botón **"↻ ACTUALIZAR"** en la barra superior que trae al instante los últimos cambios del servidor y muestra **"✓ ACTUALIZADO"** al terminar, y un **auto-sync incremental cada 30 segundos** (ligero, usa el cursor `since`) que también se dispara al volver a enfocar la pestaña. El auto-sync se **pausa mientras hay un formulario/modal abierto** (Capturar, Transferencia, Editar) para no estorbar la captura. Así los cambios entre usuarios se propagan solos sin recargar.
+
+#### Menú lateral — scroll para alcanzar todas las opciones
+
+- El menú lateral tenía `overflow: hidden`, por lo que al crecer la lista de opciones (Reporte Financiero, Categorías, Usuarios, Backup, etc.) las de abajo quedaban cortadas e inalcanzables. Ahora el área de navegación tiene scroll vertical con una barra delgada y discreta, y se puede bajar a todas las opciones.
 
 ### 🐛 Fixed
 

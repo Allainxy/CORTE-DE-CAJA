@@ -14,7 +14,7 @@
 set -e
 
 # Archivos a desplegar (agrega aquí si en el futuro hay más)
-FILES="movs-list.jsx index.html api.js daily-view.jsx app.jsx app-shell.jsx finrep-view.jsx xml-view.jsx"
+FILES="movs-list.jsx index.html api.js daily-view.jsx app.jsx app-shell.jsx finrep-view.jsx xml-view.jsx styles.css"
 
 TS=$(date +%F-%H%M)
 BACKUP_DIR="/opt/corte-kbomx/backups/frontend-${TS}"

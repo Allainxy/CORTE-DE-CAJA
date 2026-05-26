@@ -587,6 +587,7 @@ function App() {
 function TopBar({ installEvt, onInstall, movsCount, user, onLogout, syncing, cajas = [], filterCaja, setFilterCaja }) {
   const [online, setOnline] = useState(navigator.onLine);
   const [refreshing, setRefreshing] = useState(false);
+  const [justSynced, setJustSynced] = useState(false);
   useEffect(() => {
     const u = () => setOnline(navigator.onLine);
     window.addEventListener('online', u); window.addEventListener('offline', u);
@@ -622,17 +623,23 @@ function TopBar({ installEvt, onInstall, movsCount, user, onLogout, syncing, caj
           onClick={async () => {
             if (refreshing) return;
             setRefreshing(true);
+            setJustSynced(false);
+            let ok = false;
             try {
-              if (window.kbotFullResync) await window.kbotFullResync();
+              if (window.kbotFullResync) ok = await window.kbotFullResync();
             } finally {
-              setTimeout(() => setRefreshing(false), 400);
+              setRefreshing(false);
+              if (ok) {
+                setJustSynced(true);
+                setTimeout(() => setJustSynced(false), 2500);
+              }
             }
           }}
           disabled={refreshing || !online}
           title="Traer los últimos cambios del servidor (lo que capturaron otros usuarios)"
-          style={{ opacity: (refreshing || !online) ? 0.6 : 1 }}
+          style={{ opacity: (refreshing || !online) ? 0.6 : 1, color: justSynced ? 'var(--green)' : undefined, borderColor: justSynced ? 'var(--green)' : undefined }}
         >
-          {refreshing ? '↻ ACTUALIZANDO…' : '↻ ACTUALIZAR'}
+          {refreshing ? '↻ ACTUALIZANDO…' : justSynced ? '✓ ACTUALIZADO' : '↻ ACTUALIZAR'}
         </button>
         {installEvt && (
           <button className="install-btn" onClick={onInstall}>⤓ INSTALAR APP</button>
