@@ -107,6 +107,18 @@ function App() {
         }
       };
 
+      // Sync ligero e incremental (para el auto-sync periódico cada 30 s).
+      window.kbotLightSync = async () => {
+        try {
+          await KBotAPI.flushQueue();
+          const r = await KBotAPI.pull();
+          await processSyncResult(r);
+          return true;
+        } catch (e) {
+          return false;
+        }
+      };
+
       // Pull desde el servidor si hay backend
       if (KBotAPI.enabled() && KBotAPI.token()) {
         try {
@@ -126,6 +138,29 @@ function App() {
     if (u) setUser(u);
     setNeedsLogin(false);
   };
+
+  // Auto-sync periódico: cada 30 s trae cambios del servidor (lo que capturaron
+  // otros usuarios) sin que nadie tenga que recargar. Usa pull() incremental
+  // (ligero) y solo corre si hay sesión, conexión y la pestaña está visible.
+  // IMPORTANTE: se PAUSA mientras hay un formulario/modal abierto (Capturar,
+  // Transferencia, Editar) para no re-renderizar la pantalla mientras capturas.
+  useEffect(() => {
+    window.__kbotModalOpen = captureOpen || transferOpen || !!editing;
+  }, [captureOpen, transferOpen, editing]);
+
+  useEffect(() => {
+    if (needsLogin) return;
+    if (!(KBotAPI.enabled() && KBotAPI.token())) return;
+    const tick = async () => {
+      if (document.hidden || !navigator.onLine) return;
+      if (window.__kbotModalOpen) return; // no sincronizar mientras se captura
+      try { if (window.kbotLightSync) await window.kbotLightSync(); } catch (e) { /* silencioso */ }
+    };
+    const iv = setInterval(tick, 30000);
+    const onVis = () => { if (!document.hidden && !window.__kbotModalOpen) tick(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
+  }, [needsLogin]);
   const handleLogout = () => {
     KBotAPI.logout();
     setUser(null);
@@ -551,6 +586,7 @@ function App() {
 
 function TopBar({ installEvt, onInstall, movsCount, user, onLogout, syncing, cajas = [], filterCaja, setFilterCaja }) {
   const [online, setOnline] = useState(navigator.onLine);
+  const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
     const u = () => setOnline(navigator.onLine);
     window.addEventListener('online', u); window.addEventListener('offline', u);
@@ -581,6 +617,23 @@ function TopBar({ installEvt, onInstall, movsCount, user, onLogout, syncing, caj
         )}
       </div>
       <div className="tb-right" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button
+          className="install-btn"
+          onClick={async () => {
+            if (refreshing) return;
+            setRefreshing(true);
+            try {
+              if (window.kbotFullResync) await window.kbotFullResync();
+            } finally {
+              setTimeout(() => setRefreshing(false), 400);
+            }
+          }}
+          disabled={refreshing || !online}
+          title="Traer los últimos cambios del servidor (lo que capturaron otros usuarios)"
+          style={{ opacity: (refreshing || !online) ? 0.6 : 1 }}
+        >
+          {refreshing ? '↻ ACTUALIZANDO…' : '↻ ACTUALIZAR'}
+        </button>
         {installEvt && (
           <button className="install-btn" onClick={onInstall}>⤓ INSTALAR APP</button>
         )}

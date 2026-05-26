@@ -57,6 +57,10 @@ Tres mejoras a Movimientos y dos módulos nuevos de análisis.
 
 - Se agregaron los métodos `listUsers`, `createUser`, `updateUser`, `deleteUser`, `resetPassword`, `generatePin`, `setUserCajas`, que consumen los endpoints `/api/users` ya existentes en el backend.
 
+#### Sincronización entre usuarios — botón Actualizar + auto-sync
+
+- Antes los cambios de un usuario no los veía otro hasta recargar la página (el sync solo corría una vez al cargar). Ahora hay un botón **"↻ ACTUALIZAR"** en la barra superior que trae al instante los últimos cambios del servidor, y un **auto-sync incremental cada 30 segundos** (ligero, usa el cursor `since`) que también se dispara al volver a enfocar la pestaña. Así los cambios entre usuarios se propagan solos sin recargar.
+
 ### 🐛 Fixed
 
 #### Pantalla de Usuarios — "KBotAPI.listUsers is not a function"
