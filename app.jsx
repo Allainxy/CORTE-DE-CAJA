@@ -392,6 +392,9 @@ function App() {
     movs.forEach(m => {
       if (m.deleted || m.caja !== cajaId) return;
       if (fechaInicial && m.fecha < fechaInicial) return;
+      // Respetar afecta_saldo: gastos/gasolina de cortes de ruta (afecta_saldo=0)
+      // no mueven la caja (el vendedor ya los descontó del efectivo entregado).
+      if (m.afecta_saldo === 0 || m.afecta_saldo === false) return;
       if (m.tipo === 'INGRESO') saldo += m.monto;
       else if (m.tipo === 'GASTO') saldo -= m.monto;
     });

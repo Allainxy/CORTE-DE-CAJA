@@ -343,6 +343,10 @@ function computeSaldoCaja(caja, movs) {
   (movs || []).forEach(m => {
     if (m.deleted || m.caja !== caja.id) return;
     if (fechaInicial && m.fecha < fechaInicial) return;
+    // Respetar afecta_saldo: los movimientos con afecta_saldo=0 (gastos/gasolina
+    // de cortes de ruta que el vendedor ya descontó del efectivo entregado) NO
+    // mueven el saldo de la caja. Mismo criterio que calcularSaldoCaja del backend.
+    if (m.afecta_saldo === 0 || m.afecta_saldo === false) return;
     if (m.tipo === 'INGRESO') saldo += Number(m.monto) || 0;
     else if (m.tipo === 'GASTO') saldo -= Number(m.monto) || 0;
   });

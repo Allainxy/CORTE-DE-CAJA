@@ -71,7 +71,8 @@ Tres mejoras a Movimientos y dos módulos nuevos de análisis.
 
 #### Gastos de ruta volvían a afectar el saldo de caja
 
-- El backend inserta correctamente los gastos/gasolina de los cortes de ruta con `afecta_saldo = 0` (no mueven la caja porque el vendedor ya los descontó del efectivo entregado), y `calcularSaldoCaja` los excluye. Pero el backfill que corregía registros existentes solo corría una vez (al crear la columna), así que gastos capturados o recapturados con una versión vieja podían quedar con `afecta_saldo = 1` y descuadrar el saldo. Se agregó una **auto-corrección idempotente en cada arranque** del servidor que marca a 0 cualquier gasto de ruta (`src='venta-detalle'`) que haya quedado con el flag distinto de 0.
+- **Causa principal (frontend):** el cálculo del saldo de caja en el cliente (`computeSaldoCaja` en `app-shell.jsx` y la función equivalente en `app.jsx`) **no respetaba el flag `afecta_saldo`** — restaba todos los gastos, incluidos los de ruta marcados con `afecta_saldo = 0`. Por eso el saldo se veía descontado en pantalla aunque el servidor (que sí respeta el flag en `calcularSaldoCaja`) lo calculaba bien. Se corrigieron ambas funciones del frontend para ignorar los movimientos con `afecta_saldo = 0`, igual que el backend.
+- **Refuerzo (backend):** el backfill que corregía registros existentes solo corría una vez (al crear la columna). Se agregó una **auto-corrección idempotente en cada arranque** que marca a 0 cualquier gasto de ruta (`src='venta-detalle'`) que haya quedado con el flag distinto de 0, como red de seguridad.
 
 ### 🐛 Fixed
 
