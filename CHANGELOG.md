@@ -65,6 +65,14 @@ Tres mejoras a Movimientos y dos módulos nuevos de análisis.
 
 - El menú lateral tenía `overflow: hidden`, por lo que al crecer la lista de opciones (Reporte Financiero, Categorías, Usuarios, Backup, etc.) las de abajo quedaban cortadas e inalcanzables. Ahora el área de navegación tiene scroll vertical con una barra delgada y discreta, y se puede bajar a todas las opciones.
 
+#### Service worker — versiones viejas se quedaban pegadas (PWA)
+
+- El service worker se registraba siempre con la misma URL (`sw.js?v=2026-05-12g`) y el mismo nombre de cache (`kbot-v2`), por lo que el navegador nunca detectaba un SW nuevo: las máquinas se quedaban corriendo una build vieja indefinidamente (el botón Actualizar y el auto-sync no servían porque el código era anterior a ellos). Ahora el cache lleva versión con fecha (`kbot-2026-05-24k`) y el registro del SW se versiona junto con cada deploy, de modo que al activarse limpia los caches viejos y carga la versión nueva. Esto evita tener que limpiar el cache máquina por máquina.
+
+#### Gastos de ruta volvían a afectar el saldo de caja
+
+- El backend inserta correctamente los gastos/gasolina de los cortes de ruta con `afecta_saldo = 0` (no mueven la caja porque el vendedor ya los descontó del efectivo entregado), y `calcularSaldoCaja` los excluye. Pero el backfill que corregía registros existentes solo corría una vez (al crear la columna), así que gastos capturados o recapturados con una versión vieja podían quedar con `afecta_saldo = 1` y descuadrar el saldo. Se agregó una **auto-corrección idempotente en cada arranque** del servidor que marca a 0 cualquier gasto de ruta (`src='venta-detalle'`) que haya quedado con el flag distinto de 0.
+
 ### 🐛 Fixed
 
 #### Pantalla de Usuarios — "KBotAPI.listUsers is not a function"

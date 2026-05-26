@@ -13,7 +13,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
 <link rel="stylesheet" href="styles.css?v=2026-05-24k" />
 <meta name="api-url" content="https://corte.kbomx.com" />
-<meta name="app-version" content="2026-05-24k" />
+<meta name="app-version" content="2026-05-24L" />
 </head>
 <body>
 <div id="root"></div>
@@ -63,7 +63,7 @@
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', async () => {
       try {
-        const reg = await navigator.serviceWorker.register('sw.js?v=2026-05-12g');
+        const reg = await navigator.serviceWorker.register('sw.js?v=2026-05-24k');
         function showUpdateBanner(worker) {
           const banner = document.getElementById('kbot-update-banner');
           const btn = document.getElementById('kbot-update-btn');

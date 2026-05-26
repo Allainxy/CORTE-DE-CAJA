@@ -306,6 +306,23 @@ if (!movsColsAfectaSaldo.includes('afecta_saldo')) {
   console.log(`🔧 Migración v1.15.2: columna afecta_saldo agregada a movs (${r.changes} movimientos históricos corregidos retroactivamente)`);
 }
 
+// Auto-corrección idempotente (cada arranque): cualquier GASTO de corte de ruta
+// (src='venta-detalle') que se haya quedado con afecta_saldo != 0 — porque se
+// capturó con una versión vieja del backend o se recapturó — se corrige a 0 para
+// que NO mueva el saldo de la caja (el vendedor ya lo descontó del efectivo).
+try {
+  const fix = db.prepare(`
+    UPDATE movs SET afecta_saldo = 0, updated_at = ?
+    WHERE src = 'venta-detalle' AND tipo = 'GASTO' AND deleted = 0
+      AND COALESCE(afecta_saldo, 1) <> 0
+  `).run(Date.now());
+  if (fix.changes > 0) {
+    console.log(`🔧 Auto-corrección: ${fix.changes} gasto(s) de ruta marcados afecta_saldo=0 (no mueven caja)`);
+  }
+} catch (e) {
+  console.error('⚠️  Auto-corrección afecta_saldo falló (no crítico):', e.message);
+}
+
 // ===================================================
 // 8b) Tabla ordenes_compra (cabecera)
 // ===================================================
