@@ -1,0 +1,31 @@
+# Normalización de saltos de línea — K-BOTANAS Control de Caja
+# Fuerza LF en todos los archivos de texto (el servidor Linux usa LF).
+# Elimina los warnings "LF will be replaced by CRLF" y los diffs ruidosos.
+
+# Por defecto: git decide qué es texto y lo normaliza a LF en el repo.
+* text=auto eol=lf
+
+# Archivos de texto explícitos → siempre LF
+*.jsx   text eol=lf
+*.js    text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.conf  text eol=lf
+
+# Scripts de shell: SIEMPRE LF (con CRLF fallan al ejecutarse en Linux)
+*.sh    text eol=lf
+
+# Binarios: nunca tocar
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.db    binary
+*.sqlite binary
+*.pdf   binary
