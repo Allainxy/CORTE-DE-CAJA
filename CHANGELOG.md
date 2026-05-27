@@ -69,6 +69,10 @@ Tres mejoras a Movimientos y dos módulos nuevos de análisis.
 
 - El service worker se registraba siempre con la misma URL (`sw.js?v=2026-05-12g`) y el mismo nombre de cache (`kbot-v2`), por lo que el navegador nunca detectaba un SW nuevo: las máquinas se quedaban corriendo una build vieja indefinidamente (el botón Actualizar y el auto-sync no servían porque el código era anterior a ellos). Ahora el cache lleva versión con fecha (`kbot-2026-05-24k`) y el registro del SW se versiona junto con cada deploy, de modo que al activarse limpia los caches viejos y carga la versión nueva. Esto evita tener que limpiar el cache máquina por máquina.
 
+#### Comprobación de viáticos sumaba de más al saldo (doble ajuste)
+
+- Al comprobar un viático, el sistema borraba el movimiento del anticipo (devolviendo su monto completo a la caja) **y además** creaba un movimiento de devolución (sobrante) o faltante. Ese doble ajuste sumaba/restaba de más al saldo. Ejemplo: anticipo $500, comprobado $350 en casetas → la caja terminaba con +$150 de más. Ahora, al borrarse el anticipo completo, el gasto comprobado es el único que mueve la caja (neto correcto = −costo real), y ya no se crean los movimientos de devolución/faltante. La diferencia se sigue calculando y mostrando en el registro del viático, solo deja de generar un movimiento que descuadraba.
+
 #### Gastos de ruta volvían a afectar el saldo de caja
 
 - **Causa principal (frontend):** el cálculo del saldo de caja en el cliente (`computeSaldoCaja` en `app-shell.jsx` y la función equivalente en `app.jsx`) **no respetaba el flag `afecta_saldo`** — restaba todos los gastos, incluidos los de ruta marcados con `afecta_saldo = 0`. Por eso el saldo se veía descontado en pantalla aunque el servidor (que sí respeta el flag en `calcularSaldoCaja`) lo calculaba bien. Se corrigieron ambas funciones del frontend para ignorar los movimientos con `afecta_saldo = 0`, igual que el backend.

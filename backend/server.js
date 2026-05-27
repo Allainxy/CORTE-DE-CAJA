@@ -4402,54 +4402,14 @@ app.post('/api/viaticos/:id/comprobar', auth, (req, res) => {
       totalComprobado += monto;
     }
 
-    // 5) Calcular diferencia
+    // 5) Calcular diferencia (informativa, se guarda en el viático)
+    // OPCIÓN B: el anticipo se borró por completo en el paso 1 (devolviendo su
+    // monto a la caja), y los gastos comprobados ya descuentan el costo real.
+    // Por eso NO se crean movimientos de devolución/faltante: hacerlo duplicaría
+    // el ajuste y sumaría/restaría de más al saldo (bug histórico de doble suma).
+    // Neto correcto: +anticipo (al borrarlo) − gastos comprobados = −costo real.
     const diferencia = viatico.monto_anticipo - totalComprobado;
-    // diferencia > 0: sobró → INGRESO a caja_ajuste (devolución)
-    // diferencia < 0: faltó → GASTO adicional desde caja_ajuste
     let movDevolucionId = null, movFaltanteId = null;
-
-    if (diferencia > 0.01) {
-      movDevolucionId = newMovId('vt-dev');
-      db.prepare(`INSERT INTO movs (
-        id, fecha, tipo, categoria, concepto, monto, metodo, caja,
-        usuario, notas, src, user_id, updated_at, deleted
-      ) VALUES (?, ?, 'INGRESO', 'DEVOLUCION VIATICOS', ?, ?, ?, ?, ?, ?, 'viatico-comprobacion', ?, ?, 0)`).run(
-        movDevolucionId, fechaComp,
-        `Devolución viático · ${viatico.empleado_nombre}`,
-        diferencia, viatico.metodo, cajaAjusteId,
-        usuario, `Viático ${id.slice(-6)} sobrante`, userId, now
-      );
-      // Asegurar categoría INGRESO "DEVOLUCION VIATICOS"
-      const existeCat = db.prepare("SELECT id FROM cats WHERE nombre = 'DEVOLUCION VIATICOS' AND tipo = 'INGRESO' AND deleted = 0").get();
-      if (!existeCat) {
-        let grupo = db.prepare("SELECT id FROM groups WHERE tipo = 'INGRESO' AND deleted = 0 ORDER BY orden ASC LIMIT 1").get();
-        if (!grupo) {
-          const gid = 'grp-ingresos-' + now;
-          db.prepare("INSERT INTO groups (id, tipo, nombre, orden, updated_at, deleted) VALUES (?, 'INGRESO', 'INGRESOS', 0, ?, 0)").run(gid, now);
-          grupo = { id: gid };
-        }
-        db.prepare(`INSERT INTO cats (id, tipo, nombre, color, icon, group_id, updated_at, deleted)
-          VALUES (?, 'INGRESO', 'DEVOLUCION VIATICOS', '#10B981', '↩️', ?, ?, 0)`).run('cat-devolucion-viaticos', grupo.id, now);
-      }
-    } else if (diferencia < -0.01) {
-      movFaltanteId = newMovId('vt-flt');
-      db.prepare(`INSERT INTO movs (
-        id, fecha, tipo, categoria, concepto, monto, metodo, caja,
-        usuario, notas, src, user_id, updated_at, deleted
-      ) VALUES (?, ?, 'GASTO', 'AJUSTE VIATICOS', ?, ?, ?, ?, ?, ?, 'viatico-comprobacion', ?, ?, 0)`).run(
-        movFaltanteId, fechaComp,
-        `Ajuste viático (faltante) · ${viatico.empleado_nombre}`,
-        Math.abs(diferencia), viatico.metodo, cajaAjusteId,
-        usuario, `Viático ${id.slice(-6)} faltante`, userId, now
-      );
-      // Asegurar categoría GASTO "AJUSTE VIATICOS"
-      const existeCat = db.prepare("SELECT id FROM cats WHERE nombre = 'AJUSTE VIATICOS' AND tipo = 'GASTO' AND deleted = 0").get();
-      if (!existeCat) {
-        const gv = db.prepare("SELECT id FROM groups WHERE nombre = 'VIATICOS' AND tipo = 'GASTO' AND deleted = 0 LIMIT 1").get();
-        db.prepare(`INSERT INTO cats (id, tipo, nombre, color, icon, group_id, updated_at, deleted)
-          VALUES (?, 'GASTO', 'AJUSTE VIATICOS', '#EF4444', '⚠️', ?, ?, 0)`).run('cat-ajuste-viaticos', gv?.id || null, now);
-      }
-    }
 
     // 6) Actualizar viático a COMPROBADO
     db.prepare(`UPDATE viaticos SET
