@@ -1,6 +1,6 @@
 // K-BOTANAS Service Worker — offline-first
 // v2: no cachea /api, network-first para HTML, cache-first para assets estáticos
-const CACHE = 'kbot-2026-05-24k';
+const CACHE = 'kbot-2026-05-27a';
 const ASSETS = ['./', './index.html', './manifest.json', './logo.png', './styles.css'];
 
 self.addEventListener('install', e => {

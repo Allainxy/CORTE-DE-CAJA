@@ -11,6 +11,14 @@ El proyecto sigue [versionado semántico](https://semver.org/lang/es/) — `MAYO
 
 ---
 
+## [1.16.1] — 2026-05-27
+
+### Added
+
+- **Resumen por día — filtro por caja**: nuevo dropdown dentro de la vista que permite filtrar el resumen por una caja específica (CAJA PRINCIPAL, AZTECA, etc.) sin depender del selector global del TopBar. Cuando hay una caja seleccionada, su nombre aparece en la barra superior y se incluye en el encabezado y nombre de archivo del Excel exportado. El botón LIMPIAR también limpia este filtro.
+
+---
+
 ## [1.16.0] — 2026-05-24
 
 ### 📌 Resumen ejecutivo

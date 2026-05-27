@@ -86,7 +86,19 @@ function dvEnsureXLSX() {
 const DailyView = ({ movs = [], cats = [], cajas = [] }) => {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
+  const [cajaFilter, setCajaFilter] = useState('');
   const [exporting, setExporting] = useState(false);
+
+  // Cajas activas (no borradas) para el dropdown
+  const cajasActivas = useMemo(
+    () => (cajas || []).filter(c => !c.deleted).sort((a, b) => (a.nombre || '').localeCompare(b.nombre || '')),
+    [cajas]
+  );
+
+  const cajaSeleccionada = useMemo(
+    () => cajasActivas.find(c => c.id === cajaFilter),
+    [cajasActivas, cajaFilter]
+  );
 
   const yesterdayISO = useMemo(() => {
     const d = new Date(); d.setDate(d.getDate() - 1);
@@ -101,10 +113,11 @@ const DailyView = ({ movs = [], cats = [], cajas = [] }) => {
 
   const filtered = useMemo(() => {
     let r = (movs || []).filter(m => !m.deleted);
+    if (cajaFilter) r = r.filter(m => m.caja === cajaFilter);
     if (from) r = r.filter(m => m.fecha >= from);
     if (to) r = r.filter(m => m.fecha <= to);
     return r;
-  }, [movs, from, to]);
+  }, [movs, cajaFilter, from, to]);
 
   // Un movimiento "no afecta saldo" cuando afecta_saldo es 0/false (igual que en
   // Movimientos): es un gasto que el vendedor ya descontó del efectivo entregado,
@@ -178,6 +191,7 @@ const DailyView = ({ movs = [], cats = [], cajas = [] }) => {
     if (typeof XLSX === 'undefined') { setExporting(false); alert('Librería de Excel no disponible.'); return; }
 
     const aoa = [];
+    if (cajaSeleccionada) aoa.push(['CAJA', cajaSeleccionada.nombre]);
     aoa.push(['SALDO MOVIMIENTOS', '', '', '', grand.neto]);
     aoa.push(['TOTAL EGRESOS', '', '', '', -grand.gas]);
     aoa.push(['TOTAL INGRESOS', '', '', '', grand.ing]);
@@ -203,7 +217,8 @@ const DailyView = ({ movs = [], cats = [], cajas = [] }) => {
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Resumen por día');
     const ts = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '');
-    XLSX.writeFile(wb, `resumen_diario_${ts}.xlsx`);
+    const cajaTag = cajaSeleccionada ? '_' + cajaSeleccionada.nombre.replace(/[^A-Za-z0-9]+/g, '-') : '';
+    XLSX.writeFile(wb, `resumen_diario${cajaTag}_${ts}.xlsx`);
     setExporting(false);
   };
 
@@ -232,6 +247,7 @@ const DailyView = ({ movs = [], cats = [], cajas = [] }) => {
         <span className="dv-band-kv">TOTAL INGRESOS <b className="dv-pos">{fmtMXN(grand.ing)}</b></span>
         <span className="dv-band-kv">TOTAL EGRESOS <b className="dv-neg">{fmtMXN(grand.gas)}</b></span>
         <span className="dv-band-kv">{grand.count} movimientos</span>
+        {cajaSeleccionada && <span className="dv-band-kv" style={{ fontWeight: 700 }}>🏦 {cajaSeleccionada.nombre}</span>}
         {grand.infoCount > 0 && <span className="dv-band-kv" style={{ opacity: 0.7 }}>+{grand.infoCount} no afecta saldo ({fmtMXN(grand.info)})</span>}
       </div>
 
@@ -241,10 +257,16 @@ const DailyView = ({ movs = [], cats = [], cajas = [] }) => {
             <label>DESDE <input type="date" value={from} onChange={e => setFrom(e.target.value)} /></label>
             <label>HASTA <input type="date" value={to} onChange={e => setTo(e.target.value)} /></label>
           </div>
-          <button className="btn-ghost" onClick={() => { setFrom(''); setTo(''); }}>LIMPIAR</button>
-          <span className="mono" style={{ fontSize: 11, opacity: 0.6 }}>
-            La caja se filtra con el selector de arriba.
-          </span>
+          <label className="dv-caja-filter" style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 200 }}>
+            <span className="mono" style={{ fontSize: 10, letterSpacing: '0.06em', opacity: 0.7 }}>CAJA</span>
+            <select value={cajaFilter} onChange={e => setCajaFilter(e.target.value)}>
+              <option value="">🏘️ Todas las cajas</option>
+              {cajasActivas.map(c => (
+                <option key={c.id} value={c.id}>{c.nombre}</option>
+              ))}
+            </select>
+          </label>
+          <button className="btn-ghost" onClick={() => { setFrom(''); setTo(''); setCajaFilter(''); }}>LIMPIAR</button>
         </div>
       </BotanaCard>
 
