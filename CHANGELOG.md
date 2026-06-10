@@ -11,6 +11,47 @@ El proyecto sigue [versionado semántico](https://semver.org/lang/es/) — `MAYO
 
 ---
 
+## [1.16.2] — 2026-06-10
+
+### 📌 Resumen ejecutivo
+
+Release de **seguridad y corrección de bugs** a partir de una auditoría completa del sistema. No agrega funciones nuevas; endurece el backend, corrige errores reales y rota el secreto de sesión.
+
+**Lo más importante para el usuario:**
+- **Restaurar un respaldo desde la app ya funciona.** Antes siempre fallaba con "Contraseña incorrecta" aunque la contraseña fuera correcta.
+- **La sincronización offline ya no se atasca.** Si un movimiento fallaba de forma permanente, bloqueaba en silencio todos los movimientos siguientes; ahora se aísla y el resto sigue sincronizando.
+- **Seguridad reforzada.** Se rotó el secreto de sesión (todos los usuarios deben volver a iniciar sesión una vez), se restringió el acceso a la API a su propio dominio y se validan mejor los archivos que se importan.
+- **Cálculos de dinero más precisos** en arqueo, transferencias, abonos de préstamo y nómina.
+
+### 🔒 Security
+
+- **Rotación del secreto JWT.** El secreto de firma de sesión estaba versionado en el repositorio; se rotó por uno nuevo y se sacó del código. Ahora se lee de la variable de entorno `JWT_SECRET` o del archivo no versionado `data/.jwt_secret`. El backend **aborta el arranque** si el secreto no está definido (antes caía a un valor aleatorio que invalidaba las sesiones en cada reinicio).
+- **CORS restringido.** La API aceptaba peticiones de cualquier origen; ahora solo del dominio propio (`CORS_ORIGIN`, por defecto `https://corte.kbomx.com`).
+- **Importación de archivos validada.** La subida ahora solo acepta `.xlsx/.xls/.csv` y rechaza importaciones de más de 50 000 movimientos (defensa contra archivos malformados o gigantes).
+- **Cancelar préstamo exige PIN.** El endpoint de cancelación de préstamo (que revierte varios movimientos) ahora requiere PIN, igual que el borrado de un movimiento.
+- **Content-Security-Policy** declarada en `index.html`, restringiendo los orígenes de scripts y conexiones.
+
+### 🐛 Fixed
+
+- **Restaurar respaldo (`/api/backup/restore-full`)**: comparaba la contraseña contra una columna inexistente (`password_hash`), por lo que **siempre** fallaba. Ahora usa la columna real (`password`).
+- **Cola de sincronización offline (`api.js`)**: `flushQueue` hacía `break` ante cualquier error y dejaba el ítem fallido bloqueando la cabeza de la cola indefinidamente. Ahora distingue errores **permanentes** (4xx, salvo 401/408/429) — que se descartan a una *dead-letter* (`kbot_queue_failed`) y se continúa — de **transitorios** (red/5xx/408/429) — que se reintentan en orden.
+- **`GET /api/movs` sin límite**: devolvía todos los movimientos de la historia en cada llamada (riesgo de consumo de memoria). Ahora pagina con `?limit` (def. 2000, máx. 10 000) y `?offset`.
+- **Nómina**: tras guardar un pago, el total mostrado podía divergir del calculado por el servidor; ahora se sincroniza con la fila devuelta por el backend.
+- **Nómina**: los montos de bonos (ranking/mensual) usaban inputs no controlados (`defaultValue`) y podían guardar valores desactualizados al perder el foco; ahora son controlados.
+- **Compras**: las listas editables de productos/ítems usaban el índice como `key` de React, lo que mezclaba valores entre filas al eliminar una; ahora usan una clave estable.
+- **Arqueo**: el saldo físico se enviaba sin redondear (centavos fantasma) y el total de sobrantes no usaba valor absoluto; corregidos ambos.
+- **Saldos (backend)**: redondeo defensivo a centavos en la validación de saldo de transferencias y en el saldo resultante de abonos de préstamo (evita residuos de punto flotante).
+
+### 🔧 Técnico
+
+- `backend/server.js`: `JWT_SECRET` obligatorio; paginación en `/api/movs`; `cors({ origin })`; `fileFilter` + tope de filas en multer; `requirePin` en `DELETE /api/nomina/prestamos/:id`; redondeo en `/api/transferencia` y abono de préstamo.
+- `api.js`: `req()` adjunta `e.status`; `flushQueue` clasifica errores y usa *dead-letter* `kbot_queue_failed`.
+- `index.html`: meta `Content-Security-Policy`.
+- `ecosystem.config.js`: el secreto deja de estar hardcodeado; se lee de `JWT_SECRET` o `data/.jwt_secret`.
+- `nomina-view.jsx`, `compras-view.jsx`, `arqueo-view.jsx`: correcciones de estado/cálculo descritas arriba.
+
+---
+
 ## [1.16.1] — 2026-05-27
 
 ### Added
