@@ -18,6 +18,25 @@
 //   pm2 reload ecosystem.config.js && pm2 save
 // ============================================================================
 
+// ─── Secreto JWT (NO se versiona) ───────────────────────────────────────────
+// El secreto se lee de la variable de entorno JWT_SECRET o, en su defecto, del
+// archivo data/.jwt_secret (carpeta data/ está en .gitignore). NUNCA hardcodear
+// el secreto aquí: este archivo está versionado en GitHub.
+// Para (re)generar el secreto en el servidor:
+//   node -e "require('fs').writeFileSync(require('path').join(__dirname,'data','.jwt_secret'), require('crypto').randomBytes(32).toString('hex'))"
+//   chmod 600 data/.jwt_secret && pm2 reload corte-kbomx --update-env && pm2 save
+const fs = require('fs');
+const path = require('path');
+function readJwtSecret() {
+  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  try {
+    return fs.readFileSync(path.join(__dirname, 'data', '.jwt_secret'), 'utf8').trim();
+  } catch (e) {
+    console.error('ecosystem.config.js: no se pudo leer data/.jwt_secret:', e.message);
+    return undefined; // server.js abortará si JWT_SECRET queda vacío
+  }
+}
+
 module.exports = {
   apps: [
     {
@@ -45,7 +64,7 @@ module.exports = {
         NODE_ENV: 'production',
         PORT: 3401,                            // Coincide con proxy_pass de nginx
         DB_FILE: '/opt/corte-kbomx/data/kbotanas.db',
-        JWT_SECRET: 'b825a69daf64439328a334bd3ae8bb5cf36482221ba88c57e4e22d40df95f026',  // ← el installer lo reemplaza
+        JWT_SECRET: readJwtSecret(),           // ← desde env o data/.jwt_secret (ver arriba); NUNCA hardcodear
         TZ: 'America/Mexico_City',             // Zona horaria para timestamps consistentes
       },
 
