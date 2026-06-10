@@ -9,7 +9,8 @@ const multer = require('multer');
 const XLSX = require('xlsx');
 
 const PORT = process.env.PORT || 3001;
-const JWT_SECRET = process.env.JWT_SECRET || 'kbot-cambia-este-secreto-' + Math.random();
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) { console.error('FATAL: JWT_SECRET no está definida. Configúrala en el entorno (ecosystem.config.js).'); process.exit(1); }
 const DB_FILE = process.env.DB_FILE || path.join(__dirname, 'kbotanas.db');
 
 const db = new Database(DB_FILE);
@@ -496,7 +497,7 @@ try {
 }
 
 const app = express();
-app.use(cors());
+app.use(cors({ origin: process.env.CORS_ORIGIN || 'https://corte.kbomx.com' }));
 app.use(express.json({ limit: '50mb' }));
 app.use((req, _res, next) => { console.log(new Date().toISOString(), req.method, req.url); next(); });
 
@@ -605,8 +606,16 @@ app.post('/api/login', (req, res) => {
 app.get('/api/me', auth, (req, res) => res.json({ user: req.user }));
 
 // ---------- Movimientos ----------
-app.get('/api/movs', auth, (_req, res) => {
-  const rows = db.prepare('SELECT * FROM movs WHERE deleted = 0 ORDER BY fecha DESC').all();
+app.get('/api/movs', auth, (req, res) => {
+  // Paginación: ?limit (default 2000, máx 10000) y ?offset (default 0).
+  // El espejo offline del frontend usa /api/sync, no este endpoint, así que
+  // limitamos por defecto para evitar respuestas sin tope.
+  let limit = parseInt(req.query.limit, 10);
+  if (isNaN(limit) || limit <= 0) limit = 2000;
+  if (limit > 10000) limit = 10000;
+  let offset = parseInt(req.query.offset, 10);
+  if (isNaN(offset) || offset < 0) offset = 0;
+  const rows = db.prepare('SELECT * FROM movs WHERE deleted = 0 ORDER BY fecha DESC LIMIT ? OFFSET ?').all(limit, offset);
   res.json({ movs: rows });
 });
 
@@ -952,7 +961,7 @@ app.post('/api/transferencia', auth, (req, res) => {
   // Validar saldo de origen
   if (!origen.permite_negativo) {
     const saldoOrigen = calcularSaldoCaja(cajaOrigen);
-    if (saldoOrigen - m < 0) {
+    if (Math.round((saldoOrigen - m) * 100) / 100 < 0) {
       return res.status(409).json({ error: `Saldo insuficiente en ${origen.nombre} ($${saldoOrigen.toFixed(2)} disponible)` });
     }
   }
@@ -1176,7 +1185,12 @@ app.get('/api/users/:id/cajas', auth, requireAdmin, (req, res) => {
 // ---------- IMPORT / EXPORT ----------
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 } // 25 MB
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB
+  fileFilter: (_req, file, cb) => {
+    const ext = (file.originalname || '').toLowerCase().match(/\.([^.]+)$/)?.[1] || '';
+    if (['xlsx', 'xls', 'csv'].includes(ext)) return cb(null, true);
+    cb(new Error('Tipo de archivo no permitido. Solo se aceptan .xlsx, .xls o .csv'));
+  }
 });
 
 // Helper: parsear fecha en varios formatos a YYYY-MM-DD
@@ -1300,6 +1314,12 @@ function parseImportFile(buffer, filename) {
         orden: parseInt(r.orden || r.ORDEN || 0) || 0
       });
     });
+  }
+
+  if (result.movs.length > 50000) {
+    const err = new Error(`El archivo contiene ${result.movs.length} movimientos válidos; el máximo permitido por importación es 50000. Divide el archivo en partes más pequeñas.`);
+    err.statusCode = 400;
+    throw err;
   }
 
   return result;
@@ -1430,6 +1450,7 @@ app.post('/api/import/preview', auth, requireAdmin, upload.single('file'), (req,
     });
   } catch (e) {
     console.error('Error en preview:', e);
+    if (e.statusCode === 400) return res.status(400).json({ error: e.message });
     res.status(500).json({ error: 'Error parseando archivo: ' + e.message });
   }
 });
@@ -4657,7 +4678,7 @@ app.post('/api/backup/restore-full', auth, __requireAdminBackup, (req, res) => {
     const userRow = db.prepare('SELECT * FROM users WHERE id = ? AND deleted = 0').get(req.user.id);
     if (!userRow) return res.status(403).json({ error: 'Usuario no existe' });
     const bcrypt = require('bcryptjs');
-    const ok = bcrypt.compareSync(password, userRow.password_hash || '');
+    const ok = bcrypt.compareSync(password, userRow.password || '');
     if (!ok) {
       audit(req, 'RESTORE_PASSWORD_FAIL', 'backup', '', 'Intento de restauración con password incorrecta');
       return res.status(403).json({ error: 'Contraseña incorrecta' });
@@ -5591,7 +5612,7 @@ app.post('/api/nomina/prestamos/:id/abonar', auth, (req, res) => {
     `).run(id, prestamoId, fecha, monto, metodo, cajaId, movId,
       body.comentario || null, usuario, req.user?.id || null, now);
 
-    const nuevoSaldo = Number(pr.saldo_actual) - monto;
+    const nuevoSaldo = Math.round((Number(pr.saldo_actual) - monto) * 100) / 100;
     const nuevoEstado = nuevoSaldo <= 0.01 ? 'SALDADO' : 'ACTIVO';
     db.prepare(`UPDATE prestamos SET saldo_actual = ?, estado = ?, fecha_saldado = ?, updated_at = ? WHERE id = ?`)
       .run(nuevoSaldo, nuevoEstado, nuevoEstado === 'SALDADO' ? fecha : null, now, prestamoId);
@@ -5605,7 +5626,7 @@ app.post('/api/nomina/prestamos/:id/abonar', auth, (req, res) => {
 });
 
 // Cancelar préstamo (revierte movs)
-app.delete('/api/nomina/prestamos/:id', auth, (req, res) => {
+app.delete('/api/nomina/prestamos/:id', auth, requirePin, (req, res) => {
   const tx = db.transaction((id) => {
     const pr = db.prepare('SELECT * FROM prestamos WHERE id = ? AND deleted = 0').get(id);
     if (!pr) throw new Error('no existe');
