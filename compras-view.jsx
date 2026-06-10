@@ -728,6 +728,7 @@ function EditProveedorModal({ proveedor, cats, onClose, onSaved }) {
       : 'MERCANCIA';
     setProductos([...productos, {
       _new: true,
+      _tmpId: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()),
       producto: '', unidad: 'KG',
       cantidad_default: 0, precio_actual: 0,
       categoria_contable: ultCat
@@ -978,7 +979,7 @@ function EditProveedorModal({ proveedor, cats, onClose, onSaved }) {
                   <div></div>
                 </div>
                 {productos.map((p, idx) => (
-                  <div key={idx} style={{
+                  <div key={p.id || p._tmpId || idx} style={{
                     display: 'grid', gridTemplateColumns: '2fr 60px 80px 90px 1.5fr 30px',
                     gap: 6, marginBottom: 6, alignItems: 'center',
                     padding: '2px 0'
@@ -1237,6 +1238,7 @@ function CrearOrdenModal({ orden, cajas, cats, terceros, onClose, onCreated }) {
       ? items[items.length - 1].categoria_contable
       : 'MERCANCIA';
     setItems([...items, {
+      _tmpId: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()),
       producto: '', unidad: 'KG', cantidad_estimada: '', precio_estimado: '',
       categoria_contable: ultCat
     }]);
@@ -1409,7 +1411,7 @@ function CrearOrdenModal({ orden, cajas, cats, terceros, onClose, onCreated }) {
             {items.map((it, idx) => {
               const sinCantidad = !it.cantidad_estimada || parseFloat(it.cantidad_estimada) === 0;
               return (
-                <div key={idx} style={{
+                <div key={it.id || it._tmpId || idx} style={{
                   display: 'grid', gridTemplateColumns: '2fr 60px 80px 90px 1.5fr 90px 30px',
                   gap: 6, marginBottom: 6, alignItems: 'center',
                   opacity: sinCantidad ? 0.55 : 1,

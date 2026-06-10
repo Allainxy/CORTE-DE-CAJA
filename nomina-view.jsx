@@ -481,7 +481,7 @@ function PeriodoEditor({ periodo, cajas, departamentos, onRefresh, setMsg, setEr
     if (!p) return;
     setSaving(s => ({ ...s, [id]: true }));
     try {
-      await apiNom('/api/nomina/pagos/' + id, {
+      const saved = await apiNom('/api/nomina/pagos/' + id, {
         method: 'PUT',
         body: JSON.stringify({
           neto: Number(p.neto) || 0,
@@ -492,6 +492,12 @@ function PeriodoEditor({ periodo, cajas, departamentos, onRefresh, setMsg, setEr
           comentario: p.comentario || null
         })
       });
+      // El PUT devuelve la fila actualizada con el total real calculado por el servidor.
+      // Sincronizamos el estado local de esta fila para evitar divergencias (retenciones, etc.)
+      // sin recargar todo el periodo (no pisamos cambios sin guardar de otras filas).
+      if (saved && saved.id) {
+        setPagos(prev => prev.map(x => x.id === id ? { ...x, ...saved } : x));
+      }
       setDirty(d => { const nd = { ...d }; delete nd[id]; return nd; });
       setMsg('✓ Guardado');
       setTimeout(() => setMsg(''), 1500);
@@ -1369,6 +1375,12 @@ function ComisionesTablaSection() {
     setDirty(d => ({ ...d, [id]: true }));
   };
 
+  // Actualiza el valor local de un bono mientras se edita (input controlado).
+  // La persistencia sigue ocurriendo en onBlur vía guardarBono.
+  const updateBono = (id, k, v) => {
+    setBonos(prev => prev.map(b => b.id === id ? { ...b, [k]: v } : b));
+  };
+
   const guardarEscalon = async (esc) => {
     try {
       await apiNom('/api/nomina/comisiones-tabla', {
@@ -1494,7 +1506,8 @@ function ComisionesTablaSection() {
                 <tr key={b.id}>
                   <td>{b.posicion === 1 ? '🥇 1er lugar' : b.posicion === 2 ? '🥈 2do lugar' : '🥉 3er lugar'}</td>
                   <td className="num">
-                    <input className="cell" type="number" defaultValue={b.monto}
+                    <input className="cell" type="number" value={b.monto}
+                      onChange={e => updateBono(b.id, 'monto', e.target.value)}
                       onBlur={e => guardarBono(b, { monto: Number(e.target.value) })} />
                   </td>
                   <td>{b.activo ? <span style={{ color: '#10B981' }}>● Activo</span> : <span style={{ color: '#EF4444' }}>○ Inactivo</span>}</td>
@@ -1518,7 +1531,8 @@ function ComisionesTablaSection() {
                 <tr key={b.id}>
                   <td className="num">{fmtNomMXN(b.posicion)}</td>
                   <td className="num">
-                    <input className="cell" type="number" defaultValue={b.monto}
+                    <input className="cell" type="number" value={b.monto}
+                      onChange={e => updateBono(b.id, 'monto', e.target.value)}
                       onBlur={e => guardarBono(b, { monto: Number(e.target.value) })} />
                   </td>
                   <td>{b.activo ? <span style={{ color: '#10B981' }}>● Activo</span> : <span style={{ color: '#EF4444' }}>○ Inactivo</span>}</td>

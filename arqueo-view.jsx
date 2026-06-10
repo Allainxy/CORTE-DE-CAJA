@@ -222,7 +222,7 @@ function ArqueoModal({ caja, saldoSistema, onClose, onSaved }) {
         body: JSON.stringify({
           caja_id: caja.id,
           saldo_sistema: saldoSistema,
-          saldo_fisico: totalContado,
+          saldo_fisico: Math.round(totalContado * 100) / 100,
           denominaciones: denoms,
           observaciones,
           fecha: new Date().toISOString().slice(0, 10)
@@ -402,7 +402,7 @@ function HistorialArqueos({ cajas, user, onVerDetalle }) {
     const faltantes = arqueos.filter(a => a.estado === 'FALTANTE');
     const sobrantes = arqueos.filter(a => a.estado === 'SOBRANTE');
     const totalFaltante = faltantes.reduce((s, a) => s + Math.abs(a.diferencia), 0);
-    const totalSobrante = sobrantes.reduce((s, a) => s + a.diferencia, 0);
+    const totalSobrante = sobrantes.reduce((s, a) => s + Math.abs(a.diferencia), 0);
     return { total, cuadrados, faltantes: faltantes.length, sobrantes: sobrantes.length, totalFaltante, totalSobrante };
   }, [arqueos]);
 
