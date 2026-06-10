@@ -19,7 +19,9 @@ window.KBotAPI = (function () {
     if (r.status === 401) { logout(); throw new Error('Sesión expirada'); }
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      throw new Error(err.error || 'Error ' + r.status);
+      const e = new Error(err.error || 'Error ' + r.status);
+      e.status = r.status; // adjunta el status HTTP para clasificar errores permanentes vs transitorios en flushQueue
+      throw e;
     }
     return r.json();
   }
@@ -46,19 +48,49 @@ window.KBotAPI = (function () {
   function queueGet() { return JSON.parse(localStorage.getItem('kbot_queue') || '[]'); }
   function queueClear() { localStorage.removeItem('kbot_queue'); }
 
+  // Clasifica un error como PERMANENTE (no tiene sentido reintentar: 4xx de
+  // cliente) vs TRANSITORIO (red caída sin status, 5xx, o 408/429). El 401 no
+  // llega aquí porque req() ya hace logout y lo trata aparte.
+  function isPermanentError(e) {
+    const s = e && e.status;
+    if (typeof s !== 'number') return false;        // fallo de red (fetch lanzó) → transitorio
+    if (s < 400 || s >= 500) return false;          // 5xx → transitorio
+    if (s === 401 || s === 408 || s === 429) return false; // 401 lo maneja req(); 408/429 son transitorios
+    return true;                                    // resto de 4xx (p.ej. 400, 409) → permanente
+  }
+
   async function flushQueue() {
     if (!enabled() || !token() || !navigator.onLine) return 0;
     const q = queueGet();
     if (!q.length) return 0;
     let ok = 0;
-    for (const op of q) {
+    const pendientes = []; // ítems transitorios no procesados que vuelven a la cola
+    for (let i = 0; i < q.length; i++) {
+      const op = q[i];
       try {
         await req(op.path, { method: op.method, body: op.body ? JSON.stringify(op.body) : undefined });
         ok++;
-      } catch (e) { console.warn('Sync falló', op, e); break; }
+      } catch (e) {
+        if (isPermanentError(e)) {
+          // Error permanente: descartar de la cola para no atascarla. Se guarda
+          // en una dead-letter para conservar el rastro, y se continúa.
+          console.error('Sync: descartando op permanentemente fallida', op, e);
+          try {
+            const dead = JSON.parse(localStorage.getItem('kbot_queue_failed') || '[]');
+            dead.push({ op, error: e.message, status: e.status, ts: Date.now() });
+            localStorage.setItem('kbot_queue_failed', JSON.stringify(dead));
+          } catch (_) { /* localStorage lleno/corrupto: aún así descartamos la op */ }
+          continue;
+        }
+        // Error transitorio: este ítem y todos los siguientes quedan pendientes
+        // para el próximo ciclo. Preservamos el orden FIFO.
+        console.warn('Sync falló (transitorio, se reintentará)', op, e);
+        for (let j = i; j < q.length; j++) pendientes.push(q[j]);
+        break;
+      }
     }
-    if (ok === q.length) queueClear();
-    else localStorage.setItem('kbot_queue', JSON.stringify(q.slice(ok)));
+    if (pendientes.length) localStorage.setItem('kbot_queue', JSON.stringify(pendientes));
+    else queueClear();
     return ok;
   }
 
