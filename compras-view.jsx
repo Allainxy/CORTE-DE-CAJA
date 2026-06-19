@@ -4,6 +4,8 @@
 // - Proveedores con catálogo de productos
 // - Al crear orden: precarga productos del proveedor con últimos precios
 
+const newId = (p='') => p + (typeof crypto!=='undefined' && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2,10)));
+
 const ComprasView = ({ cajas = [], cats = [], user, refreshAll }) => {
   const [tab, setTab] = useState('ordenes');
 
@@ -728,7 +730,7 @@ function EditProveedorModal({ proveedor, cats, onClose, onSaved }) {
       : 'MERCANCIA';
     setProductos([...productos, {
       _new: true,
-      _tmpId: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()),
+      _tmpId: newId(''),
       producto: '', unidad: 'KG',
       cantidad_default: 0, precio_actual: 0,
       categoria_contable: ultCat
@@ -1238,7 +1240,7 @@ function CrearOrdenModal({ orden, cajas, cats, terceros, onClose, onCreated }) {
       ? items[items.length - 1].categoria_contable
       : 'MERCANCIA';
     setItems([...items, {
-      _tmpId: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()),
+      _tmpId: newId(''),
       producto: '', unidad: 'KG', cantidad_estimada: '', precio_estimado: '',
       categoria_contable: ultCat
     }]);

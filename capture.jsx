@@ -1,4 +1,5 @@
 // capture.jsx — Modal de captura rápida + detallada
+const newId = (p='') => p + (typeof crypto!=='undefined' && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2,10)));
 const CaptureModal = ({ open, onClose, cats, groups = [], cajas = [], saldoCaja, user, misCajas = [], onSave, initialTipo = 'INGRESO', initialCajaId = null, editing = null, addCategory }) => {
   const [mode, setMode] = useState('rapido'); // rapido | detallado
   const [tipo, setTipo] = useState(initialTipo);
@@ -113,7 +114,7 @@ const CaptureModal = ({ open, onClose, cats, groups = [], cajas = [], saldoCaja,
     if (!newCatName.trim()) return;
     if (!grupoId) { alert('Primero selecciona un GRUPO arriba'); return; }
     const c = {
-      id: 'c-' + Date.now(),
+      id: newId('c-'),
       tipo,
       nombre: newCatName.trim().toUpperCase(),
       color: tipo === 'INGRESO' ? '#2EC27E' : '#FF6B35',

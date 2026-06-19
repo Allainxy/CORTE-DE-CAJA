@@ -122,7 +122,12 @@ window.KBotAPI = (function () {
   // deleteMovWithPin: borrado online inmediato con PIN (no usa cola). Devuelve
   // la respuesta del servidor; el frontend tolera 404 ("ya borrado").
   async function deleteMovWithPin(id, pin) {
-    return req('/api/movs/' + id, { method: 'DELETE', body: JSON.stringify({ pin }) });
+    try {
+      return await req('/api/movs/' + id, { method: 'DELETE', body: JSON.stringify({ pin }) });
+    } catch (e) {
+      if (e.status === 404) return { alreadyGone: true };
+      throw e;
+    }
   }
   // deleteTransfer: borra ambos lados de una transferencia con PIN (online).
   async function deleteTransfer(tid, pin) {

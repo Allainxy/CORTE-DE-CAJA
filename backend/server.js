@@ -16,6 +16,10 @@ const DB_FILE = process.env.DB_FILE || path.join(__dirname, 'kbotanas.db');
 const db = new Database(DB_FILE);
 db.pragma('journal_mode = WAL');
 
+// Helper local para generar IDs anti-colisión (preserva prefijo, usa crypto.randomUUID si está disponible)
+const newId = (p = '') => p + (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)));
+
+try {
 // ---------- Migraciones automáticas (idempotentes) ----------
 // 0) Tabla app_settings (configuración global clave-valor; p.ej. clasificación
 //    de categorías del Reporte Financiero). Compartida por todos los usuarios.
@@ -495,6 +499,10 @@ try {
 } catch (e) {
   console.error('⚠️  Backfill de categorías fantasma falló (no crítico):', e.message);
 }
+} catch (e) {
+  console.error('FATAL: fallo de migración de schema:', e);
+  process.exit(1);
+}
 
 const app = express();
 app.use(cors({ origin: process.env.CORS_ORIGIN || 'https://corte.kbomx.com' }));
@@ -966,12 +974,12 @@ app.post('/api/transferencia', auth, (req, res) => {
     }
   }
 
-  const tid = transfer_id || ('t-' + Date.now() + '-' + Math.floor(Math.random() * 9999));
+  const tid = transfer_id || newId('t-');
   const f = fecha || new Date().toISOString().slice(0, 10);
   const concept = concepto || `Transferencia ${origen.nombre} → ${destino.nombre}`;
   const now = Date.now();
-  const idGasto = 'm-tg-' + Date.now() + '-' + Math.floor(Math.random() * 999);
-  const idIngreso = 'm-ti-' + Date.now() + '-' + Math.floor(Math.random() * 999);
+  const idGasto = newId('m-tg-');
+  const idIngreso = newId('m-ti-');
 
   const stmt = db.prepare(`INSERT INTO movs (id, fecha, tipo, categoria, concepto, monto, metodo, caja, caja_destino, transfer_id, usuario, notas, src, user_id, updated_at, deleted)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`);
@@ -1036,7 +1044,7 @@ app.post('/api/users', auth, requireAdmin, (req, res) => {
   const exists = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
   if (exists) return res.status(409).json({ error: 'Ese username ya existe' });
 
-  const id = 'u-' + Date.now() + '-' + Math.floor(Math.random() * 9999);
+  const id = newId('u-');
   const pwHash = bcrypt.hashSync(password, 10);
   db.prepare(`INSERT INTO users (id, username, password, nombre, rol, activo, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)`).run(id, username.trim(), pwHash, nombre.trim(), rol, activo === false ? 0 : 1, Date.now());
@@ -1460,7 +1468,7 @@ app.post('/api/import/commit', auth, requireAdmin, (req, res) => {
   const { data, filename, formato } = req.body || {};
   if (!data || !data.movs) return res.status(400).json({ error: 'data inválida' });
 
-  const importId = 'imp-' + Date.now() + '-' + Math.floor(Math.random()*9999);
+  const importId = newId('imp-');
   const now = Date.now();
 
   try {
@@ -1479,7 +1487,7 @@ app.post('/api/import/commit', auth, requireAdmin, (req, res) => {
         const key = `${g.tipo}|${g.nombre.toUpperCase()}`;
         if (groupsMap.has(key) || seenG.has(key)) return;
         seenG.add(key);
-        const gid = 'g-' + Date.now() + '-' + Math.floor(Math.random()*99999);
+        const gid = newId('g-');
         db.prepare(`INSERT INTO groups (id, tipo, nombre, orden, updated_at, deleted, import_id)
           VALUES (?, ?, ?, ?, ?, 0, ?)`).run(gid, g.tipo, g.nombre, g.orden || 0, now, importId);
         groupsMap.set(key, gid);
@@ -1499,7 +1507,7 @@ app.post('/api/import/commit', auth, requireAdmin, (req, res) => {
         const key = c.nombre.toUpperCase();
         if (cajasMap.has(key) || seenC.has(key)) return;
         seenC.add(key);
-        const cid = 'caja-' + Date.now() + '-' + Math.floor(Math.random()*99999);
+        const cid = newId('caja-');
         const meta = c.tipo === 'EFECTIVO' ? { icon: '💵', color: '#2EC27E' }
                   : c.tipo === 'BANCO'    ? { icon: '🏦', color: '#3B82F6' }
                   : { icon: '💳', color: '#FF6B35' };
@@ -1529,7 +1537,7 @@ app.post('/api/import/commit', auth, requireAdmin, (req, res) => {
         const key = `${c.tipo}|${c.nombre.toUpperCase()}`;
         if (catsMap.has(key) || seenCa.has(key)) return;
         seenCa.add(key);
-        const cid = 'cat-' + Date.now() + '-' + Math.floor(Math.random()*99999);
+        const cid = newId('cat-');
         const groupId = c.grupo ? groupsMap.get(`${c.tipo}|${c.grupo.toUpperCase()}`) : null;
         db.prepare(`INSERT INTO cats (id, nombre, tipo, icon, color, group_id, updated_at, deleted, import_id)
           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`).run(
@@ -1749,7 +1757,7 @@ app.post('/api/arqueos', auth, (req, res) => {
     estado = diferencia > 0 ? 'SOBRANTE' : 'FALTANTE';
   }
 
-  const id = 'arq-' + Date.now() + '-' + Math.floor(Math.random() * 9999);
+  const id = newId('arq-');
   const now = Date.now();
   const fechaUse = fecha || new Date(now).toISOString().slice(0, 10);
 
@@ -1823,7 +1831,7 @@ app.post('/api/terceros', auth, (req, res) => {
   if (!nombre || !nombre.trim()) return res.status(400).json({ error: 'Nombre requerido' });
   const t = (tipo === 'CLIENTE') ? 'CLIENTE' : 'PROVEEDOR';
   const tp = (tipo_proveedor === 'SERVICIO') ? 'SERVICIO' : 'PRODUCTO';
-  const id = 'ter-' + Date.now() + '-' + Math.floor(Math.random() * 9999);
+  const id = newId('ter-');
   const now = Date.now();
   db.prepare(`INSERT INTO terceros (id, nombre, tipo, tipo_proveedor, categoria_id_sugerida, grupo_sugerido, categoria_sugerida, telefono, notas, activo, updated_at, deleted)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, 0)`).run(
@@ -1933,7 +1941,7 @@ app.put('/api/terceros/:id/productos', auth, (req, res) => {
         idsRecibidos.add(p.id);
       } else {
         // Crear nuevo
-        const nuevoId = 'pp-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+        const nuevoId = newId('pp-');
         db.prepare(`INSERT INTO proveedor_productos (
           id, proveedor_id, producto, unidad, cantidad_default, precio_actual,
           categoria_contable, activo, orden_visual, created_at, updated_at, deleted
@@ -2028,7 +2036,7 @@ app.post('/api/cxp', auth, (req, res) => {
   const monto = parseFloat(monto_total);
   if (!monto || monto <= 0) return res.status(400).json({ error: 'Monto inválido' });
 
-  const id = 'cxp-' + Date.now() + '-' + Math.floor(Math.random() * 9999);
+  const id = newId('cxp-');
   const now = Date.now();
   const fc = fecha_creacion || new Date().toISOString().slice(0, 10);
 
@@ -2059,7 +2067,7 @@ app.post('/api/cxp', auth, (req, res) => {
   if (Array.isArray(facturas)) {
     facturas.forEach(f => {
       if (!f || !f.monto) return;
-      const fid = 'fac-' + Date.now() + '-' + Math.floor(Math.random() * 9999);
+      const fid = newId('fac-');
       db.prepare(`INSERT INTO cxp_facturas (id, cxp_id, numero, uuid, fecha, monto, notas, updated_at, deleted)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`).run(
         fid, id,
@@ -2166,7 +2174,7 @@ app.post('/api/cxp/:id/facturas', auth, (req, res) => {
   const { numero, uuid, fecha, monto, notas } = req.body || {};
   const m = parseFloat(monto);
   if (!m || m <= 0) return res.status(400).json({ error: 'Monto inválido' });
-  const id = 'fac-' + Date.now() + '-' + Math.floor(Math.random() * 9999);
+  const id = newId('fac-');
   const now = Date.now();
   db.prepare(`INSERT INTO cxp_facturas (id, cxp_id, numero, uuid, fecha, monto, notas, updated_at, deleted)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`).run(
@@ -2216,8 +2224,8 @@ function crearAbonoInterno(req, cxpId, body, direccion) {
   const tipoMov = (dir === 'COBRAR') ? 'INGRESO' : 'GASTO';
   const conceptoMov = (dir === 'COBRAR' ? 'Cobro de: ' : 'Pago a: ') + (cxp.tercero_nombre || cxp.concepto);
 
-  const abonoId = 'abo-' + Date.now() + '-' + Math.floor(Math.random() * 9999);
-  const movId = 'm-cxp-' + Date.now() + '-' + Math.floor(Math.random() * 9999);
+  const abonoId = newId('abo-');
+  const movId = newId('m-cxp-');
   const now = Date.now();
   const fechaUse = fecha || new Date().toISOString().slice(0, 10);
 
@@ -2395,7 +2403,7 @@ app.post('/api/ordenes', auth, (req, res) => {
     // Crear mov de salida si monto_entregado > 0
     let movSalidaId = null;
     if (montoEntregado > 0) {
-      movSalidaId = 'm-ord-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+      movSalidaId = newId('m-ord-');
       const conceptoMov = `Compra a ${o.proveedor_nombre}${o.comprador_nombre ? ' · ' + o.comprador_nombre : ''}`;
       db.prepare(`INSERT INTO movs (
         id, fecha, tipo, categoria, concepto, monto, metodo, caja, usuario, notas,
@@ -2424,7 +2432,7 @@ app.post('/api/ordenes', auth, (req, res) => {
 
     // Insertar items
     for (const it of o.items) {
-      const itemId = it.id || ('oi-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000));
+      const itemId = it.id || newId('oi-');
       const cant = Number(it.cantidad_estimada || 0);
       const precio = Number(it.precio_estimado || 0);
       db.prepare(`INSERT INTO ordenes_compra_items (
@@ -2448,7 +2456,7 @@ app.post('/api/ordenes', auth, (req, res) => {
           'SELECT id FROM proveedor_productos WHERE proveedor_id = ? AND LOWER(producto) = LOWER(?) AND deleted = 0'
         ).get(o.proveedor_id, it.producto);
         if (!existe) {
-          const ppId = 'pp-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+          const ppId = newId('pp-');
           const cant = Number(it.cantidad_estimada || 0);
           const precio = Number(it.precio_estimado || 0);
           db.prepare(`INSERT INTO proveedor_productos (
@@ -2521,7 +2529,7 @@ app.put('/api/ordenes/:id', auth, (req, res) => {
     // 2) Crear nuevo mov de salida si monto > 0
     let movSalidaId = null;
     if (montoEntregado > 0) {
-      movSalidaId = 'm-ord-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+      movSalidaId = newId('m-ord-');
       const conceptoMov = `Compra a ${o.proveedor_nombre}${o.comprador_nombre ? ' · ' + o.comprador_nombre : ''}`;
       db.prepare(`INSERT INTO movs (
         id, fecha, tipo, categoria, concepto, monto, metodo, caja, usuario, notas,
@@ -2539,7 +2547,7 @@ app.put('/api/ordenes/:id', auth, (req, res) => {
 
     // 4) Crear items nuevos
     for (const it of o.items) {
-      const itemId = 'oi-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+      const itemId = newId('oi-');
       const cant = Number(it.cantidad_estimada || 0);
       const precio = Number(it.precio_estimado || 0);
       db.prepare(`INSERT INTO ordenes_compra_items (
@@ -2563,7 +2571,7 @@ app.put('/api/ordenes/:id', auth, (req, res) => {
           'SELECT id FROM proveedor_productos WHERE proveedor_id = ? AND LOWER(producto) = LOWER(?) AND deleted = 0'
         ).get(o.proveedor_id, it.producto);
         if (!existe) {
-          const ppId = 'pp-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+          const ppId = newId('pp-');
           const cant = Number(it.cantidad_estimada || 0);
           const precio = Number(it.precio_estimado || 0);
           db.prepare(`INSERT INTO proveedor_productos (
@@ -2681,7 +2689,7 @@ app.post('/api/ordenes/:id/cerrar', auth, (req, res) => {
           );
         } else {
           // Crear si no existía (puede pasar si la orden se creó sin proveedor_id y se asignó después)
-          const ppId = 'pp-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+          const ppId = newId('pp-');
           db.prepare(`INSERT INTO proveedor_productos (
             id, proveedor_id, producto, unidad, cantidad_default, precio_actual,
             ultimo_precio_orden_id, ultimo_precio_fecha,
@@ -2698,7 +2706,7 @@ app.post('/api/ordenes/:id/cerrar', auth, (req, res) => {
 
     // ───── SOBRANTE: si anticipo > total real, devolver dinero a la caja ─────
     if (sobrante > 0.01) {
-      movDevolucionId = 'm-ord-dev-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+      movDevolucionId = newId('m-ord-dev-');
       db.prepare(`INSERT INTO movs (
         id, fecha, tipo, categoria, concepto, monto, metodo, caja, usuario, notas,
         user_id, src, orden_id, created_at, updated_at, deleted
@@ -2730,7 +2738,7 @@ app.post('/api/ordenes/:id/cerrar', auth, (req, res) => {
         const itemDb = db.prepare('SELECT * FROM ordenes_compra_items WHERE id = ? AND deleted = 0').get(it.id);
         if (!itemDb) continue;
 
-        const movId = 'm-ord-item-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+        const movId = newId('m-ord-item-');
         const cat = it.categoria_contable || itemDb.categoria_contable || 'MERCANCIA';
         db.prepare(`INSERT INTO movs (
           id, fecha, tipo, categoria, concepto, monto, metodo, caja, usuario, notas,
@@ -2773,7 +2781,7 @@ app.post('/api/ordenes/:id/cerrar', auth, (req, res) => {
         const itemDb = db.prepare('SELECT * FROM ordenes_compra_items WHERE id = ? AND deleted = 0').get(it.id);
         if (!itemDb) continue;
 
-        const movId = 'm-ord-item-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+        const movId = newId('m-ord-item-');
         const cat = it.categoria_contable || itemDb.categoria_contable || 'MERCANCIA';
         db.prepare(`INSERT INTO movs (
           id, fecha, tipo, categoria, concepto, monto, metodo, caja, usuario, notas,
@@ -2794,7 +2802,7 @@ app.post('/api/ordenes/:id/cerrar', auth, (req, res) => {
       // Si pago_inmediato y se eligió otra caja, hay que ajustar
       if (anticipo > 0 && cajaPago !== orden.caja_id && saldoPendiente > 0) {
         // Crear "transferencia interna": INGRESO en caja_anticipo + GASTO en caja_pago por el saldo
-        const tId = 'm-ord-trans-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+        const tId = newId('m-ord-trans-');
         // No es necesario: cada mov por item ya descontó de cajaDestino el monto correspondiente
         // El neto en cajaAnticipo (que perdió el anticipo) es -anticipo
         // El neto en cajaDestino (que perdió los items) es -monto_real
@@ -2810,7 +2818,7 @@ app.post('/api/ordenes/:id/cerrar', auth, (req, res) => {
       // Si había anticipo: los movs por anticipo se mantienen y registramos la CxP solo por el saldo
       // Si NO había anticipo: no se mueve caja, solo se crea la CxP por el total real
       
-      const cxpId = 'cxp-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+      const cxpId = newId('cxp-');
       cxpIdCreada = cxpId;
       
       // Determinar categoría de la CxP (la mayoría usada en items)
@@ -2831,7 +2839,7 @@ app.post('/api/ordenes/:id/cerrar', auth, (req, res) => {
         if (existente) {
           terceroId = existente.id;
         } else {
-          terceroId = 't-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+          terceroId = newId('t-');
           db.prepare(`INSERT INTO terceros (id, tipo, nombre, categoria_sugerida, activo, created_at, updated_at, deleted, user_id, user_nombre)
                       VALUES (?, 'PROVEEDOR', ?, ?, 1, ?, ?, 0, ?, ?)`).run(
             terceroId, orden.proveedor_nombre, catPrincipal, now, now, req.user.id, req.user.nombre
@@ -2923,7 +2931,7 @@ app.post('/api/ordenes/:id/pagar', auth, (req, res) => {
 
   const tx = db.transaction(() => {
     // Crear abono en cxp_abonos
-    const abonoId = 'ab-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+    const abonoId = newId('ab-');
     
     // Items de la orden para desglosar el gasto contablemente
     const items = db.prepare('SELECT * FROM ordenes_compra_items WHERE orden_id = ? AND deleted = 0').all(orden.id);
@@ -2942,7 +2950,7 @@ app.post('/api/ordenes/:id/pagar', auth, (req, res) => {
       // Pago único total sin anticipo: crear movs por item específicos
       for (const it of items) {
         if (!it.total_real || it.total_real <= 0) continue;
-        const movId = 'm-ord-pago-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+        const movId = newId('m-ord-pago-');
         db.prepare(`INSERT INTO movs (
           id, fecha, tipo, categoria, concepto, monto, metodo, caja, usuario, notas,
           user_id, src, orden_id, abono_id, created_at, updated_at, deleted
@@ -2968,7 +2976,7 @@ app.post('/api/ordenes/:id/pagar', auth, (req, res) => {
       });
       const catPrincipal = Object.keys(catCount).sort((a, b) => catCount[b] - catCount[a])[0] || 'MERCANCIA';
       
-      movGenericoId = 'm-ord-pago-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+      movGenericoId = newId('m-ord-pago-');
       db.prepare(`INSERT INTO movs (
         id, fecha, tipo, categoria, concepto, monto, metodo, caja, usuario, notas,
         user_id, src, orden_id, abono_id, created_at, updated_at, deleted
@@ -3164,16 +3172,16 @@ const CANALES_VENTA = new Set(['DETALLE', 'MAYOREO', 'DULCERIA', 'MAQUILA']);
 
 // Helper: generar id TEXT estilo del sistema
 function newVentaId() {
-  return 'v-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+  return newId('v-');
 }
 function newMovId(prefix) {
-  return 'm-' + prefix + '-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+  return newId('m-' + prefix + '-');
 }
 function newVendedorId() {
-  return 'vd-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+  return newId('vd-');
 }
 function newCorteId() {
-  return 'cd-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+  return newId('cd-');
 }
 
 // Helper: buscar o crear categoría INGRESO por canal
@@ -4214,10 +4222,10 @@ app.get('/api/inteligencia/dashboard', auth, (req, res) => {
 
 // Helpers locales
 function newViaticoId() {
-  return 'vt-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+  return newId('vt-');
 }
 function newViaticoConceptoId() {
-  return 'vc-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000);
+  return newId('vc-');
 }
 
 // Categoría especial autoexcluida del P&L
@@ -4793,14 +4801,14 @@ app.post('/api/backup/restore-table/:name', auth, __requireAdminBackup, (req, re
 
 // === RUTAS DE NOMINA ===
 
-function newDeptId() { return 'dept-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000); }
-function newEmpId() { return 'emp-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000); }
-function newPeriodoId() { return 'np-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000); }
-function newPagoId() { return 'npg-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000); }
-function newPrestamoId() { return 'pr-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000); }
-function newAbonoId() { return 'pa-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000); }
-function newComisionTableId() { return 'com-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000); }
-function newBonoId() { return 'bono-' + Date.now() + '-' + Math.floor(Math.random() * 9000 + 1000); }
+function newDeptId() { return newId('dept-'); }
+function newEmpId() { return newId('emp-'); }
+function newPeriodoId() { return newId('np-'); }
+function newPagoId() { return newId('npg-'); }
+function newPrestamoId() { return newId('pr-'); }
+function newAbonoId() { return newId('pa-'); }
+function newComisionTableId() { return newId('com-'); }
+function newBonoId() { return newId('bono-'); }
 
 const CAT_PRESTAMO = 'PRESTAMOS EMPLEADOS';
 const CAT_ABONO = 'ABONO PRESTAMO EMPLEADO';
@@ -5845,6 +5853,13 @@ app.put('/api/settings/:key', auth, requireRole(['admin', 'gerente']), (req, res
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
     .run(key, valueStr, now, req.user?.nombre || req.user?.id || null);
   res.json({ ok: true, key, updated_at: now });
+});
+
+// ---------- Error handler global (red de seguridad para errores síncronos no capturados) ----------
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', req.method, req.url, err);
+  if (res.headersSent) return next(err);
+  res.status(err.statusCode || 500).json({ error: err.message || 'Error interno' });
 });
 
 app.listen(PORT, () => {

@@ -72,6 +72,9 @@ function mountNominaExtensions(app, db, opts = {}) {
 
   log(`[nomina-extensions] db API detectada: ${isBetterSqlite ? 'better-sqlite3 (sync)' : 'sqlite3 (callback)'}`);
 
+  // Generador de IDs anti-colisión (UUID v4 si está disponible, fallback base36)
+  const newId = (p='') => p + (typeof crypto!=='undefined' && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2,10)));
+
   // ==========================================================================
   // T2 — SINCRONIZAR EMPLEADOS EN PERIODO ABIERTO
   // ==========================================================================
@@ -113,7 +116,7 @@ function mountNominaExtensions(app, db, opts = {}) {
 
       let added = 0;
       for (const emp of faltantes) {
-        const pagoId = `npg-${Date.now()}-${Math.floor(Math.random() * 9000) + 1000}-${added}`;
+        const pagoId = newId('npg-');
         const categoria = `NOMINA ${(emp.departamento_nombre || 'GENERAL').toUpperCase()}`;
         // JSON con desglose vacío del mismo shape que usa el sistema
         const detalle = JSON.stringify({
@@ -382,7 +385,7 @@ function mountNominaExtensions(app, db, opts = {}) {
       if (!caja) return res.status(400).json({ error: 'Caja no encontrada o eliminada' });
 
       // Generar movimiento GASTO con schema real
-      const movId = `m-cm-${Date.now()}-${Math.floor(Math.random() * 9000) + 1000}`;
+      const movId = newId('m-cm-');
       const nowMs = Date.now();
       const userName = cerrado_by || 'Administrador';
       const userId   = cerrado_by ? `u-${cerrado_by.toLowerCase().replace(/\s+/g, '-')}` : 'u-admin';

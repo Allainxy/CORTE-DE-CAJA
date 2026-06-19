@@ -20,8 +20,10 @@
 // si el día está cerrado.
 // ============================================================================
 
+const newId = (p='') => p + (typeof crypto!=='undefined' && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2,10)));
+
 function newCierreId() {
-  return 'vc-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
+  return newId('vc-');
 }
 
 // Helper: devuelve el cierre activo del día (deleted=0 y desbloqueado_at IS NULL)

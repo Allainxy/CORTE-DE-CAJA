@@ -1,4 +1,5 @@
 // xml-view.jsx — Importar y exportar XML
+const newId = (p='') => p + (typeof crypto!=='undefined' && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2,10)));
 const XMLView = ({ movs, onImport, cats }) => {
   const [parsed, setParsed] = useState(null);
   const [error, setError] = useState('');
@@ -213,7 +214,7 @@ const CategoriasView = ({ cats, movs, groups = [], user, addCategory, deleteCate
     if (!nombre.trim()) return;
     if (!grupoId) { alert('Selecciona un GRUPO'); return; }
     addCategory({
-      id: 'c-' + Date.now(),
+      id: newId('c-'),
       tipo,
       nombre: nombre.trim().toUpperCase(),
       color, icon: icon || '•',
@@ -225,7 +226,7 @@ const CategoriasView = ({ cats, movs, groups = [], user, addCategory, deleteCate
   const handleNewGroup = () => {
     if (!newGroupNombre.trim()) return;
     addGroup({
-      id: 'g-' + Date.now(),
+      id: newId('g-'),
       tipo: newGroupTipo,
       nombre: newGroupNombre.trim(),
       orden: groups.filter(g => g.tipo === newGroupTipo).length

@@ -21,11 +21,12 @@ module.exports = function mountNominaPagosIndividuales(app, db, opts) {
   const log = opts.log || (() => {});
 
   // Helper: nuevo id de mov para nomina (consistente con server.js)
+  const newId = (p='') => p + (typeof crypto!=='undefined' && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2,10)));
   function newMovId() {
-    return 'm-nom-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
+    return newId('m-nom-');
   }
   function newAbonoId() {
-    return 'ab-' + Date.now() + '-' + Math.floor(Math.random() * 10000);
+    return newId('ab-');
   }
   function hoyISO() {
     return new Date().toISOString().slice(0, 10);

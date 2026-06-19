@@ -1,5 +1,6 @@
 // seed.js — Datos iniciales y categorías por defecto
 window.KBotSeed = (function () {
+  const newId = (p = '') => p + (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)));
   const CATS = [
     // INGRESOS
     { id: 'i-rutas', tipo: 'INGRESO', nombre: 'VENTAS RUTAS', color: '#2EC27E', icon: '🛻' },
@@ -51,7 +52,7 @@ window.KBotSeed = (function () {
         const c = ingresos[Math.floor(Math.random() * ingresos.length)];
         const conceptos = conceptosIng[c.nombre] || ['Venta'];
         out.push({
-          id: 'm' + (id++).toString().padStart(5, '0'),
+          id: newId('m'),
           fecha: iso,
           tipo: 'INGRESO',
           categoria: c.nombre,
@@ -68,7 +69,7 @@ window.KBotSeed = (function () {
         const c = gastos[Math.floor(Math.random() * gastos.length)];
         const conceptos = conceptosGas[c.nombre] || ['Gasto'];
         out.push({
-          id: 'm' + (id++).toString().padStart(5, '0'),
+          id: newId('m'),
           fecha: iso,
           tipo: 'GASTO',
           categoria: c.nombre,

@@ -11,6 +11,8 @@ function tipoMeta(t) {
   return TIPOS_CAJA.find(x => x.value === t) || TIPOS_CAJA[0];
 }
 
+const newId = (p='') => p + (typeof crypto!=='undefined' && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36)+Math.random().toString(36).slice(2,10)));
+
 const CajasView = ({ cajas, movs, user, saldoCaja, addCaja, updateCaja, archivarCaja, deleteCaja, onTransferClick, setFilterCaja, setActive }) => {
   const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -184,7 +186,7 @@ const CajasView = ({ cajas, movs, user, saldoCaja, addCaja, updateCaja, archivar
               updateCaja({ id: editing.id, ...data });
             } else {
               addCaja({
-                id: 'caja-' + Date.now() + '-' + Math.floor(Math.random() * 999),
+                id: newId('caja-'),
                 orden: (cajas || []).length,
                 archivada: 0,
                 deleted: 0,
