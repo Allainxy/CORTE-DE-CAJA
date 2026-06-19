@@ -95,20 +95,22 @@ Captura (id='m'+Date.now()+rand) → IndexedDB → cola localStorage (kbot_queue
 
 > Estado: ⬜ pendiente · 🔄 en progreso · ✅ hecho
 
+> Progreso 2026-06-18 (rama `fix/roadmap-fase1`): aplicados #2, #4, #5, #8(headers), y fix 404. Diseños listos para #1, #3, #6, F4 (ver `docs/DISENOS-PENDIENTES.md`).
+
 **Fase 1 — Correctitud de datos (lo más importante):**
-1. ⬜ Migrar dinero a **enteros-centavos** (o documentar tolerancia + redondeo consistente). *(alto riesgo — paso dedicado con sign-off)*
-2. ⬜ IDs cliente a **`crypto.randomUUID()`** (anti-colisión).
-3. ⬜ UPSERT con guard real de conflicto (`WHERE excluded.updated_at > movs.updated_at`).
-4. ⬜ Backup diario de `corte` con rotación + copia fuera del VPS.
+1. 🔄 Migrar dinero a **enteros-centavos**. *(diseño listo — alto riesgo, pendiente sign-off + ventana)*
+2. ✅ IDs cliente+server a **`crypto.randomUUID()`** (helper `newId`, anti-colisión). *Nota: se preservaron a propósito 2 ids con dependencia de formato (id de movimiento `'m'+timestamp` y folio de orden `'ord-'`); el id de movimiento offline conviene resolverlo seteando `created_at` en cliente (follow-up).*
+3. 🔄 UPSERT con guard real de conflicto (cliente envía `updated_at` lógico + LWW). *(diseño listo)*
+4. ✅ Backup diario de `corte` (cron 2am, `.backup` consistente, rotación 30d). *Pendiente: copia fuera del VPS.*
 
 **Fase 2 — Robustez backend:**
-5. ⬜ Error handler global + proteger el bloque de migraciones.
-6. ⬜ Extraer routers/servicios del monolito; arreglar el orden de rutas.
+5. ✅ Error handler global + bloque de migraciones protegido (try/catch + `process.exit(1)`).
+6. 🔄 Extraer routers/servicios del monolito; arreglar el orden de rutas. *(diseño/secuencia incremental lista)*
 7. ⬜ Tests sobre la lógica extraída (saldos, nómina, transferencias).
-8. ⬜ Headers de seguridad + monitoreo externo.
+8. 🔄 Headers de seguridad ✅ (HSTS/X-Frame/X-Content/Referrer/Permissions) · monitoreo externo ⬜.
 
 **Fase 3 — Frontend/UX:**
-9. ⬜ Eliminar `_vps_frontend/` y centralizar helpers de formato.
+9. 🔄 Centralizar helpers de formato (análisis listo: identicos vs divergentes) · eliminar `_vps_frontend/` ⬜.
 10. ⬜ Build con esbuild/Vite (mata Babel-en-navegador y el `?v=` manual).
 11. ⬜ Pase de accesibilidad + responsive de tablas grandes.
 12. ⬜ `<Modal>`/`<DataTable>` base + hook `useApi`; descomponer monolitos.
