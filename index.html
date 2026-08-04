@@ -5,8 +5,9 @@
 <!-- Content-Security-Policy: restringe orígenes de script y conexión.
      'unsafe-eval' es OBLIGATORIO: Babel Standalone transpila los .jsx en runtime (usa eval/new Function).
      'unsafe-inline' es OBLIGATORIO: hay <script> inline en este index.html (SW, banner de actualización).
-     Quitar cualquiera de los dos rompe la app. unpkg.com sirve React/ReactDOM/Babel/xlsx. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com 'unsafe-inline' 'unsafe-eval'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://corte.kbomx.com; manifest-src 'self'; worker-src 'self'" />
+     Quitar cualquiera de los dos rompe la app. unpkg.com sirve React/ReactDOM/Babel;
+     cdnjs.cloudflare.com sirve xlsx.full.min.js (carga on-demand al exportar a Excel, ver movs-list.jsx). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://unpkg.com https://cdnjs.cloudflare.com 'unsafe-inline' 'unsafe-eval'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://corte.kbomx.com; manifest-src 'self'; worker-src 'self'" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#E63946" />
 <title>K-BOTANAS · Control de Caja</title>
