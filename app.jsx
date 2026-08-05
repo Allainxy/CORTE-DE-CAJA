@@ -398,7 +398,7 @@ function App() {
       if (m.tipo === 'INGRESO') saldo += m.monto;
       else if (m.tipo === 'GASTO') saldo -= m.monto;
     });
-    return saldo;
+    return Math.round((saldo + Number.EPSILON) * 100) / 100;
   };
 
   const transferir = async ({ cajaOrigen, cajaDestino, monto, fecha, concepto, notas }) => {

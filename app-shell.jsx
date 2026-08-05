@@ -350,7 +350,7 @@ function computeSaldoCaja(caja, movs) {
     if (m.tipo === 'INGRESO') saldo += Number(m.monto) || 0;
     else if (m.tipo === 'GASTO') saldo -= Number(m.monto) || 0;
   });
-  return saldo;
+  return Math.round((saldo + Number.EPSILON) * 100) / 100;
 }
 const yearKey = (iso) => iso.slice(0, 4);
 

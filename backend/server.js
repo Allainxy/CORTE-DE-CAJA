@@ -18,6 +18,8 @@ db.pragma('journal_mode = WAL');
 
 // Helper local para generar IDs anti-colisión (preserva prefijo, usa crypto.randomUUID si está disponible)
 const newId = (p = '') => p + (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)));
+// Redondeo a centavos consistente (evita drift de punto flotante en sumas de dinero REAL)
+const round2 = (n) => Math.round(((Number(n) || 0) + Number.EPSILON) * 100) / 100;
 
 try {
 // ---------- Migraciones automáticas (idempotentes) ----------
@@ -850,7 +852,7 @@ function calcularSaldoCaja(cajaId) {
   const gastos = db.prepare(`SELECT COALESCE(SUM(monto),0) AS s FROM movs
     WHERE caja = ? AND tipo = 'GASTO' AND deleted = 0 AND COALESCE(afecta_saldo, 1) = 1
       AND (fecha >= ? OR ? IS NULL OR ? = '')`).get(cajaId, caja.fecha_inicial || '', caja.fecha_inicial, caja.fecha_inicial);
-  return (caja.saldo_inicial || 0) + (ingresos.s || 0) - (gastos.s || 0);
+  return round2((caja.saldo_inicial || 0) + (ingresos.s || 0) - (gastos.s || 0));
 }
 
 app.get('/api/cajas', auth, (req, res) => {
