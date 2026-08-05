@@ -20,6 +20,8 @@ db.pragma('journal_mode = WAL');
 const newId = (p = '') => p + (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)));
 // Redondeo a centavos consistente (evita drift de punto flotante en sumas de dinero REAL)
 const round2 = (n) => Math.round(((Number(n) || 0) + Number.EPSILON) * 100) / 100;
+// Tolerancia de reloj para el updated_at lógico del cliente (last-write-wins)
+const SYNC_SKEW_MS = 5 * 60 * 1000;
 
 try {
 // ---------- Migraciones automáticas (idempotentes) ----------
@@ -633,20 +635,27 @@ app.post('/api/movs', auth, (req, res) => {
   const m = req.body;
   if (!m?.id || !m.fecha || !m.tipo) return res.status(400).json({ error: 'Datos incompletos' });
   const now = Date.now();
-  db.prepare(`INSERT INTO movs (id, fecha, tipo, categoria, concepto, monto, metodo, caja, caja_destino, transfer_id, usuario, notas, src, user_id, updated_at, deleted)
+  // updated_at lógico del cliente (sello del momento de edición) para last-write-wins.
+  // Se acota contra relojes adelantados; si no viene (cliente viejo) se usa el reloj del server.
+  const uaIn = Number(m.updated_at);
+  const ua = (Number.isFinite(uaIn) && uaIn > 0) ? Math.min(uaIn, now + SYNC_SKEW_MS) : now;
+  // El UPDATE del upsert solo aplica si el sello entrante es MÁS RECIENTE que el guardado.
+  const info = db.prepare(`INSERT INTO movs (id, fecha, tipo, categoria, concepto, monto, metodo, caja, caja_destino, transfer_id, usuario, notas, src, user_id, updated_at, deleted)
     VALUES (@id, @fecha, @tipo, @categoria, @concepto, @monto, @metodo, @caja, @caja_destino, @transfer_id, @usuario, @notas, @src, @user_id, @updated_at, 0)
     ON CONFLICT(id) DO UPDATE SET
       fecha=@fecha, tipo=@tipo, categoria=@categoria, concepto=@concepto, monto=@monto,
       metodo=@metodo, caja=@caja, caja_destino=@caja_destino, transfer_id=@transfer_id,
-      usuario=@usuario, notas=@notas, src=@src, updated_at=@updated_at, deleted=0`).run({
+      usuario=@usuario, notas=@notas, src=@src, updated_at=@updated_at, deleted=0
+      WHERE excluded.updated_at > movs.updated_at`).run({
     id: m.id, fecha: m.fecha, tipo: m.tipo, categoria: m.categoria || '',
     concepto: m.concepto || '', monto: Number(m.monto) || 0,
     metodo: m.metodo || 'EFECTIVO', caja: m.caja || 'caja-principal',
     caja_destino: m.caja_destino || null, transfer_id: m.transfer_id || null,
     usuario: m.usuario || req.user.nombre, notas: m.notas || '',
-    src: m.src || 'manual', user_id: req.user.id, updated_at: now
+    src: m.src || 'manual', user_id: req.user.id, updated_at: ua
   });
-  res.json({ ok: true, id: m.id });
+  // applied=false ⇒ llegó una versión más vieja y se ignoró (no es error; el cliente la quita de la cola).
+  res.json({ ok: true, id: m.id, applied: info.changes > 0 });
 });
 
 app.post('/api/movs/bulk', auth, (req, res) => {
@@ -657,12 +666,15 @@ app.post('/api/movs/bulk', auth, (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
     ON CONFLICT(id) DO UPDATE SET fecha=excluded.fecha, tipo=excluded.tipo, categoria=excluded.categoria,
       concepto=excluded.concepto, monto=excluded.monto, metodo=excluded.metodo, caja=excluded.caja,
-      usuario=excluded.usuario, notas=excluded.notas, src=excluded.src, updated_at=excluded.updated_at, deleted=0`);
+      usuario=excluded.usuario, notas=excluded.notas, src=excluded.src, updated_at=excluded.updated_at, deleted=0
+      WHERE excluded.updated_at > movs.updated_at`);
   const tx = db.transaction((arr) => {
     for (const m of arr) {
+      const uaIn = Number(m.updated_at);
+      const ua = (Number.isFinite(uaIn) && uaIn > 0) ? Math.min(uaIn, now + SYNC_SKEW_MS) : now;
       stmt.run(m.id, m.fecha, m.tipo, m.categoria || '', m.concepto || '', Number(m.monto) || 0,
         m.metodo || 'EFECTIVO', m.caja || 'PRINCIPAL', m.usuario || req.user.nombre,
-        m.notas || '', m.src || 'xml', req.user.id, now);
+        m.notas || '', m.src || 'xml', req.user.id, ua);
     }
   });
   tx(items);

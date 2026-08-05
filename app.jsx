@@ -185,6 +185,8 @@ function App() {
 
   const saveMov = async (mov) => {
     if (user && !mov.usuario) mov.usuario = user.nombre;
+    // Sello lógico del momento de edición (normalizado al reloj del server) para last-write-wins.
+    mov.updated_at = (KBotAPI.logicalNow ? KBotAPI.logicalNow() : Date.now());
     await KBotDB.put('movs', mov);
     setMovs(prev => {
       const idx = prev.findIndex(x => x.id === mov.id);

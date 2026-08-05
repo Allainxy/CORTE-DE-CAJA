@@ -9,6 +9,10 @@ window.KBotAPI = (function () {
   const enabled = () => !!BASE;
   const token = () => localStorage.getItem(TOKEN_KEY);
   const user = () => { try { return JSON.parse(localStorage.getItem(USER_KEY)); } catch { return null; } };
+  // Offset de reloj vs servidor (se recalibra en cada sync). logicalNow() da un
+  // timestamp normalizado al reloj del server para sellar movs (last-write-wins).
+  let clockOffset = parseInt(localStorage.getItem('kbot_clock_offset') || '0', 10) || 0;
+  function logicalNow() { return Date.now() + clockOffset; }
 
   async function req(path, opts = {}) {
     if (!enabled()) throw new Error('API no configurada');
@@ -98,6 +102,7 @@ window.KBotAPI = (function () {
     if (!enabled() || !token()) return null;
     const since = parseInt(localStorage.getItem(SINCE_KEY) || '0');
     const r = await req('/api/sync?since=' + since);
+    if (r && r.serverTime != null) { clockOffset = r.serverTime - Date.now(); localStorage.setItem('kbot_clock_offset', String(clockOffset)); }
     localStorage.setItem(SINCE_KEY, String(r.serverTime));
     return r;
   }
@@ -107,11 +112,12 @@ window.KBotAPI = (function () {
   async function pullFull() {
     if (!enabled() || !token()) return null;
     const r = await req('/api/sync?since=0');
-    if (r && r.serverTime != null) localStorage.setItem(SINCE_KEY, String(r.serverTime));
+    if (r && r.serverTime != null) { clockOffset = r.serverTime - Date.now(); localStorage.setItem('kbot_clock_offset', String(clockOffset)); localStorage.setItem(SINCE_KEY, String(r.serverTime)); }
     return r;
   }
 
   async function syncMov(mov) {
+    if (mov.updated_at == null) mov.updated_at = logicalNow();
     queueAdd({ method: 'POST', path: '/api/movs', body: mov });
     flushQueue();
   }
@@ -224,7 +230,7 @@ window.KBotAPI = (function () {
 
   return {
     enabled, token, user, login, logout,
-    pull, pullFull, syncMov, deleteMov, deleteMovWithPin, deleteTransfer, transferir,
+    pull, pullFull, logicalNow, syncMov, deleteMov, deleteMovWithPin, deleteTransfer, transferir,
     syncCaja, updateCaja, archivarCaja, deleteCaja,
     syncCat, deleteCat, updateCat, syncGroup, deleteGroup, updateGroup,
     reorderGroups, syncBudget, bulkMovs,
