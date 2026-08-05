@@ -96,7 +96,7 @@ Captura (id='m'+Date.now()+rand) → IndexedDB → cola localStorage (kbot_queue
 > Estado: ⬜ pendiente · 🔄 en progreso · ✅ hecho
 
 > Progreso 2026-06-18 (rama `fix/roadmap-fase1`): aplicados #2, #4, #5, #8(headers), y fix 404. Diseños listos para #1, #3, #6, F4 (ver `docs/DISENOS-PENDIENTES.md`).
-> Progreso 2026-08-05: DESPLEGADO a producción #2 (IDs), #5 (error handler+migraciones), fix 404 (main @ 0d633d3). #1 resuelto con enfoque B (redondeo consistente en saldos, main @ e97a5eb) — la migración completa a enteros-centavos (A) queda diferida (requiere tests #7 primero). Estado: #1✅(B) #2✅ #4✅ #5✅ #8-headers✅ · pendientes: #3,#6,#7,#8-monitoreo,#9-15.
+> Progreso 2026-08-05: DESPLEGADO a producción #2 (IDs), #5 (error handler+migraciones), fix 404 (main @ 0d633d3). #1 resuelto con enfoque B (redondeo consistente en saldos, main @ e97a5eb) — la migración completa a enteros-centavos (A) queda diferida (requiere tests #7 primero). #3 resolución de conflictos LWW desplegada (main @ 9627311): cliente envía updated_at lógico + offset de reloj, server aplica UPSERT condicional. Estado: #1✅(B) #2✅ #3✅ #4✅ #5✅ #8-headers✅ · pendientes: #6(routers,diseñado), #7(tests), #8-monitoreo, #9-15.
 
 **Fase 1 — Correctitud de datos (lo más importante):**
 1. 🔄 Migrar dinero a **enteros-centavos**. *(diseño listo — alto riesgo, pendiente sign-off + ventana)*
