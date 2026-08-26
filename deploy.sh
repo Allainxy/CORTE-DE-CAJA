@@ -123,6 +123,7 @@ rsync -a --delete \
   --exclude='.github/' \
   --exclude='.env*' \
   --exclude='.gitignore' \
+  --exclude='.gitattributes' \
   --exclude='.dockerignore' \
   --exclude='deploy*.sh' \
   --exclude='Dockerfile' \
