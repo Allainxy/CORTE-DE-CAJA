@@ -34,6 +34,14 @@ function App() {
   const [needsLogin, setNeedsLogin] = useState(() => KBotAPI.enabled() && !KBotAPI.token());
   const [syncing, setSyncing] = useState(false);
 
+  // Si el token expira a mitad de sesión (401), req() lo borra y dispara este evento:
+  // volvemos a la pantalla de login en vez de quedar atorados en "Token requerido".
+  useEffect(() => {
+    const onExpired = () => setNeedsLogin(true);
+    window.addEventListener('kbot-session-expired', onExpired);
+    return () => window.removeEventListener('kbot-session-expired', onExpired);
+  }, []);
+
   // Load on boot
   useEffect(() => {
     if (needsLogin) return;

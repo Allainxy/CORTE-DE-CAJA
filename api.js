@@ -20,7 +20,7 @@ window.KBotAPI = (function () {
     const t = token();
     if (t) headers.Authorization = 'Bearer ' + t;
     const r = await fetch(BASE + path, { ...opts, headers });
-    if (r.status === 401) { logout(); throw new Error('Sesión expirada'); }
+    if (r.status === 401) { logout(); if (typeof window !== 'undefined') window.dispatchEvent(new Event('kbot-session-expired')); throw new Error('Sesión expirada'); }
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
       const e = new Error(err.error || 'Error ' + r.status);
