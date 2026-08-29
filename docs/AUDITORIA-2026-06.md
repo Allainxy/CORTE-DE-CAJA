@@ -107,7 +107,7 @@ Captura (id='m'+Date.now()+rand) → IndexedDB → cola localStorage (kbot_queue
 **Fase 2 — Robustez backend:**
 5. ✅ Error handler global + bloque de migraciones protegido (try/catch + `process.exit(1)`).
 6. 🔄 Extraer routers/servicios del monolito; arreglar el orden de rutas. *(diseño/secuencia incremental lista)*
-7. ⬜ Tests sobre la lógica extraída (saldos, nómina, transferencias).
+7. 🔄 Tests: suite base con `node --test` desplegada (main @ ba77f19) — `backend/lib/money.js` (round2/clampUpdatedAt) extraído y testeado; tests de contrato de la guarda LWW y del saldo (afecta_saldo, fecha_inicial, redondeo). 14/14 verde. Falta ampliar cobertura conforme se extraiga más lógica (#6).
 8. 🔄 Headers de seguridad ✅ (HSTS/X-Frame/X-Content/Referrer/Permissions) · monitoreo externo ⬜.
 
 **Fase 3 — Frontend/UX:**
