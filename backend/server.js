@@ -7,6 +7,7 @@ const jwt = require('jsonwebtoken');
 const path = require('path');
 const multer = require('multer');
 const XLSX = require('xlsx');
+const { round2, clampUpdatedAt } = require('./lib/money');
 
 const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -18,8 +19,7 @@ db.pragma('journal_mode = WAL');
 
 // Helper local para generar IDs anti-colisión (preserva prefijo, usa crypto.randomUUID si está disponible)
 const newId = (p = '') => p + (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)));
-// Redondeo a centavos consistente (evita drift de punto flotante en sumas de dinero REAL)
-const round2 = (n) => Math.round(((Number(n) || 0) + Number.EPSILON) * 100) / 100;
+// round2 y clampUpdatedAt viven en ./lib/money (con tests en test/money.test.js).
 // Tolerancia de reloj para el updated_at lógico del cliente (last-write-wins)
 const SYNC_SKEW_MS = 5 * 60 * 1000;
 
@@ -637,8 +637,7 @@ app.post('/api/movs', auth, (req, res) => {
   const now = Date.now();
   // updated_at lógico del cliente (sello del momento de edición) para last-write-wins.
   // Se acota contra relojes adelantados; si no viene (cliente viejo) se usa el reloj del server.
-  const uaIn = Number(m.updated_at);
-  const ua = (Number.isFinite(uaIn) && uaIn > 0) ? Math.min(uaIn, now + SYNC_SKEW_MS) : now;
+  const ua = clampUpdatedAt(m.updated_at, now, SYNC_SKEW_MS);
   // El UPDATE del upsert solo aplica si el sello entrante es MÁS RECIENTE que el guardado.
   const info = db.prepare(`INSERT INTO movs (id, fecha, tipo, categoria, concepto, monto, metodo, caja, caja_destino, transfer_id, usuario, notas, src, user_id, updated_at, deleted)
     VALUES (@id, @fecha, @tipo, @categoria, @concepto, @monto, @metodo, @caja, @caja_destino, @transfer_id, @usuario, @notas, @src, @user_id, @updated_at, 0)
@@ -670,8 +669,7 @@ app.post('/api/movs/bulk', auth, (req, res) => {
       WHERE excluded.updated_at > movs.updated_at`);
   const tx = db.transaction((arr) => {
     for (const m of arr) {
-      const uaIn = Number(m.updated_at);
-      const ua = (Number.isFinite(uaIn) && uaIn > 0) ? Math.min(uaIn, now + SYNC_SKEW_MS) : now;
+      const ua = clampUpdatedAt(m.updated_at, now, SYNC_SKEW_MS);
       stmt.run(m.id, m.fecha, m.tipo, m.categoria || '', m.concepto || '', Number(m.monto) || 0,
         m.metodo || 'EFECTIVO', m.caja || 'PRINCIPAL', m.usuario || req.user.nombre,
         m.notas || '', m.src || 'xml', req.user.id, ua);
