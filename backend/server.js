@@ -395,41 +395,6 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_orden_items_orden ON ordenes_compra_item
 
 console.log('✅ Tablas ordenes_compra y ordenes_compra_items listas');
 
-// 8d) Auto-crear categorías MERCANCIA y 6 áreas si no existen
-const AREAS_COMPRAS = ['MAQUILA', 'DULCERIA', 'CACAHUATE', 'GOMITAS', 'CHOCOLATE', 'RUTAS'];
-function asegurarCategoriasMercancia() {
-  // Grupo MERCANCIA debe existir
-  let grupoMer = db.prepare("SELECT id FROM groups WHERE nombre = 'MERCANCIA' AND tipo = 'GASTO' AND deleted = 0").get();
-  if (!grupoMer) {
-    const id = 'g-mer';
-    const now = Date.now();
-    db.prepare(`INSERT OR IGNORE INTO groups (id, nombre, tipo, color, icon, created_at, updated_at, deleted)
-                VALUES (?, 'MERCANCIA', 'GASTO', '#D62828', '📥', ?, ?, 0)`).run(id, now, now);
-    grupoMer = { id };
-    console.log('🔧 Grupo MERCANCIA creado');
-  }
-  // Categoría base "MERCANCIA" (sin área)
-  const tieneBase = db.prepare("SELECT id FROM cats WHERE nombre = 'MERCANCIA' AND tipo = 'GASTO' AND deleted = 0").get();
-  if (!tieneBase) {
-    const now = Date.now();
-    db.prepare(`INSERT OR IGNORE INTO cats (id, nombre, tipo, group_id, color, icon, created_at, updated_at, deleted)
-                VALUES ('c-mer-base', 'MERCANCIA', 'GASTO', ?, '#D62828', '📦', ?, ?, 0)`).run(grupoMer.id, now, now);
-    console.log('🔧 Categoría MERCANCIA (base) creada');
-  }
-  // Categorías por área
-  for (const area of AREAS_COMPRAS) {
-    const nombre = 'MERCANCIA - ' + area;
-    const existe = db.prepare("SELECT id FROM cats WHERE nombre = ? AND tipo = 'GASTO' AND deleted = 0").get(nombre);
-    if (!existe) {
-      const id = 'c-mer-' + area.toLowerCase();
-      const now = Date.now();
-      db.prepare(`INSERT OR IGNORE INTO cats (id, nombre, tipo, group_id, color, icon, created_at, updated_at, deleted)
-                  VALUES (?, ?, 'GASTO', ?, '#D62828', '📦', ?, ?, 0)`).run(id, nombre, grupoMer.id, now, now);
-      console.log('🔧 Categoría ' + nombre + ' creada');
-    }
-  }
-}
-try { asegurarCategoriasMercancia(); } catch (e) { console.error('Error categorías mercancía:', e.message); }
 
 // 9) Asegurar que admin esté siempre activo (protección)
 db.prepare(`UPDATE users SET activo = 1 WHERE rol = 'admin' AND (activo IS NULL OR activo = 0)`).run();
@@ -1918,26 +1883,27 @@ app.get('/api/inteligencia/dashboard', auth, (req, res) => {
     try {
       topProveedores = db.prepare(`
         SELECT
-          t.nombre AS proveedor,
-          COALESCE(SUM(o.total_real), 0) AS compras_total,
+          COALESCE(t.nombre, o.proveedor_nombre) AS proveedor,
+          COALESCE(SUM(o.monto_real), 0) AS compras_total,
           COUNT(o.id) AS ordenes_count
         FROM ordenes_compra o
         LEFT JOIN terceros t ON t.id = o.proveedor_id
         WHERE o.deleted = 0 AND o.fecha_cierre >= ? AND o.fecha_cierre <= ?
           AND o.estado IN ('PAGADA', 'PENDIENTE_PAGO')
-        GROUP BY o.proveedor_id
+        GROUP BY COALESCE(o.proveedor_id, UPPER(o.proveedor_nombre))
         ORDER BY compras_total DESC
         LIMIT 10
       `).all(desde, hasta);
-    } catch (e) { topProveedores = []; }
+    } catch (e) { console.error('[inteligencia] top proveedores:', e.message); topProveedores = []; }
 
     // ============ CxP antigüedad ============
     let cxpAntiguedad = { vigente: 0, mes_1: 0, mes_2_mas: 0, total: 0, count: 0 };
     try {
       const cxpRows = db.prepare(`
-        SELECT id, fecha, total, COALESCE(monto_pagado, 0) AS pagado
-        FROM cxp
-        WHERE deleted = 0 AND estado != 'PAGADA'
+        SELECT c.id, c.fecha_creacion AS fecha, c.monto_total AS total,
+          COALESCE((SELECT SUM(a.monto) FROM cxp_abonos a WHERE a.cxp_id = c.id AND a.deleted = 0), 0) AS pagado
+        FROM cxp c
+        WHERE c.deleted = 0 AND c.direccion = 'PAGAR' AND c.estado NOT IN ('PAGADA', 'CANCELADA')
       `).all();
       const hoy = new Date();
       for (const row of cxpRows) {
@@ -1951,7 +1917,7 @@ app.get('/api/inteligencia/dashboard', auth, (req, res) => {
         cxpAntiguedad.total += saldo;
         cxpAntiguedad.count++;
       }
-    } catch (e) {}
+    } catch (e) { console.error('[inteligencia] antigüedad CxP:', e.message); }
 
     // ============ Saldos de cajas (todas activas) ============
     const cajasInfo = db.prepare(`
@@ -2108,13 +2074,19 @@ app.get('/api/backup/list-tables', auth, __requireAdminBackup, (req, res) => {
 });
 
 // GET /api/backup/full-db — descarga la BD entera como archivo binario
-app.get('/api/backup/full-db', auth, __requireAdminBackup, (req, res) => {
+app.get('/api/backup/full-db', auth, __requireAdminBackup, async (req, res) => {
+  // Snapshot con la API de backup de SQLite: incluye lo que aún vive en el WAL.
+  // Descargar el .db crudo entregaba la BD sin las transacciones no volcadas.
+  const tmp = __backupPath.join(__backupDir, `.tmp-download-${Date.now()}-${process.pid}.db`);
   try {
-    if (!__backupFs.existsSync(__dbPath)) return res.status(404).json({ error: 'BD no encontrada' });
     const fname = `kbotanas-backup-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.db`;
+    await db.backup(tmp);
     audit(req, 'BACKUP_DOWNLOAD_DB', 'backup', '', `Descarga backup completo`);
-    res.download(__dbPath, fname);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    res.download(tmp, fname, () => __backupFs.unlink(tmp, () => {}));
+  } catch (e) {
+    __backupFs.unlink(tmp, () => {});
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // GET /api/backup/full-sql — descarga dump SQL como texto
@@ -2191,11 +2163,11 @@ app.get('/api/backup/auto-download/:filename', auth, __requireAdminBackup, (req,
 });
 
 // POST /api/backup/auto-run — crear backup automático manualmente
-app.post('/api/backup/auto-run', auth, __requireAdminBackup, (req, res) => {
+app.post('/api/backup/auto-run', auth, __requireAdminBackup, async (req, res) => {
   try {
     const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
     const dest = __backupPath.join(__backupAutoDir, `kbotanas-MANUAL-${ts}.db`);
-    __backupFs.copyFileSync(__dbPath, dest);
+    await db.backup(dest); // consistente (incluye el WAL), igual que el cron con sqlite3 .backup
     const st = __backupFs.statSync(dest);
     audit(req, 'BACKUP_RUN', 'backup', dest, `Backup manual creado: ${(st.size/1024).toFixed(1)} KB`);
     res.json({ ok: true, file: __backupPath.basename(dest), size: st.size });
@@ -2206,6 +2178,13 @@ app.post('/api/backup/auto-run', auth, __requireAdminBackup, (req, res) => {
 // Requiere: confirmation_token === "RESTAURAR" + password admin verificada
 // Body: { confirmation_token, password, db_base64 }
 app.post('/api/backup/restore-full', auth, __requireAdminBackup, (req, res) => {
+  // DESHABILITADA: el flujo de abajo sobrescribe el .db con la BD abierta en modo WAL.
+  // El -wal viejo queda junto al archivo nuevo y SQLite lo reaplica encima → corrupción;
+  // además el respaldo de seguridad (copyFileSync) puede omitir lo que vive en el WAL.
+  // Antes de reactivarla: db.backup() para el respaldo, integrity_check del archivo
+  // subido, db.close(), borrar -wal/-shm, copiar y reiniciar. Ver docs/AUDITORIA-2026-06.md.
+  return res.status(503).json({ error: 'La restauración completa está deshabilitada por seguridad. Solicítala al administrador del servidor.' });
+  // eslint-disable-next-line no-unreachable
   try {
     const { confirmation_token, password, db_base64 } = req.body || {};
     if (confirmation_token !== 'RESTAURAR') {
@@ -2215,7 +2194,7 @@ app.post('/api/backup/restore-full', auth, __requireAdminBackup, (req, res) => {
     if (!db_base64) return res.status(400).json({ error: 'Archivo de backup requerido' });
 
     // Verificar password del admin
-    const userRow = db.prepare('SELECT * FROM users WHERE id = ? AND deleted = 0').get(req.user.id);
+    const userRow = db.prepare('SELECT * FROM users WHERE id = ? AND activo = 1').get(req.user.id);
     if (!userRow) return res.status(403).json({ error: 'Usuario no existe' });
     const bcrypt = require('bcryptjs');
     const ok = bcrypt.compareSync(password, userRow.password || '');

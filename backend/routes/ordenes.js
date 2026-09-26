@@ -549,23 +549,27 @@ module.exports = function mountOrdenes(app, db, opts) {
             terceroId = existente.id;
           } else {
             terceroId = newId('t-');
-            db.prepare(`INSERT INTO terceros (id, tipo, nombre, categoria_sugerida, activo, created_at, updated_at, deleted, user_id, user_nombre)
-                        VALUES (?, 'PROVEEDOR', ?, ?, 1, ?, ?, 0, ?, ?)`).run(
-              terceroId, orden.proveedor_nombre, catPrincipal, now, now, req.user.id, req.user.nombre
+            db.prepare(`INSERT INTO terceros (id, tipo, nombre, categoria_sugerida, activo, updated_at, deleted)
+                        VALUES (?, 'PROVEEDOR', ?, ?, 1, ?, 0)`).run(
+              terceroId, orden.proveedor_nombre, catPrincipal, now
             );
           }
         }
 
         // Crear la CxP por el SALDO PENDIENTE (no por el total, porque el anticipo ya está cubierto)
+        // cxp.categoria_id guarda el ID de la categoría (así la lee la vista de CxP);
+        // catPrincipal es el nombre → se resuelve contra cats (null si no existe).
+        const catPrincipalId = db.prepare("SELECT id FROM cats WHERE nombre = ? AND tipo = 'GASTO' AND deleted = 0")
+          .get(catPrincipal)?.id || null;
         db.prepare(`INSERT INTO cxp (
-          id, direccion, tercero_id, tercero_nombre, concepto, categoria,
-          monto_total, fecha_emision, fecha_vencimiento, estado, observaciones, prioridad,
-          user_id, user_nombre, created_at, updated_at, deleted
-        ) VALUES (?, 'PAGAR', ?, ?, ?, ?, ?, ?, ?, 'PENDIENTE', ?, 0, ?, ?, ?, ?, 0)`).run(
-          cxpId, terceroId, orden.proveedor_nombre, conceptoCxp, catPrincipal,
-          saldoPendiente, fechaCierre, fechaVenc,
+          id, direccion, tercero_id, tercero_nombre, concepto, categoria_id,
+          monto_total, fecha_creacion, fecha_vencimiento, estado, observaciones,
+          user_id, user_nombre, updated_at, deleted
+        ) VALUES (?, 'PAGAR', ?, ?, ?, ?, ?, ?, ?, 'PENDIENTE', ?, ?, ?, ?, 0)`).run(
+          cxpId, terceroId, orden.proveedor_nombre, conceptoCxp, catPrincipalId,
+          Math.round(saldoPendiente * 100) / 100, fechaCierre, fechaVenc,
           `Vinculada a orden ${orden.id}` + (body.observaciones ? ' · ' + body.observaciones : ''),
-          req.user.id, req.user.nombre, now, now
+          req.user.id, req.user.nombre, now
         );
 
         // Estado final: si hubo anticipo, la orden tiene "parte pagada" pero la CxP también... cuidado con dobles cargos
@@ -636,7 +640,8 @@ module.exports = function mountOrdenes(app, db, opts) {
 
     const now = Date.now();
     const fecha = body.fecha || new Date().toISOString().slice(0, 10);
-    const cajaInfo = db.prepare('SELECT nombre FROM cajas WHERE id = ?').get(body.caja_id);
+    const cajaInfo = db.prepare('SELECT nombre FROM cajas WHERE id = ? AND deleted = 0').get(body.caja_id);
+    if (!cajaInfo) return res.status(400).json({ error: 'Caja no encontrada' });
 
     const tx = db.transaction(() => {
       // Crear abono en cxp_abonos
@@ -689,7 +694,7 @@ module.exports = function mountOrdenes(app, db, opts) {
         db.prepare(`INSERT INTO movs (
           id, fecha, tipo, categoria, concepto, monto, metodo, caja, usuario, notas,
           user_id, src, orden_id, abono_id, created_at, updated_at, deleted
-        ) VALUES (?, ?, 'GASTO', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`).run(
+        ) VALUES (?, ?, 'GASTO', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`).run(
           movGenericoId, fecha, catPrincipal,
           `Pago a ${orden.proveedor_nombre} · Orden ${orden.id.split('-').pop()}${esPagoTotal ? ' (TOTAL)' : ' (parcial)'}`,
           monto, body.metodo || 'EFECTIVO', body.caja_id, req.user.nombre,
@@ -700,12 +705,12 @@ module.exports = function mountOrdenes(app, db, opts) {
 
       // Crear abono en cxp_abonos
       db.prepare(`INSERT INTO cxp_abonos (
-        id, cxp_id, monto, fecha, metodo, caja_id, mov_id, observaciones,
-        user_id, user_nombre, created_at, updated_at, deleted
+        id, cxp_id, monto, fecha, metodo, caja_id, caja_nombre, mov_id, notas,
+        user_id, user_nombre, updated_at, deleted
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`).run(
         abonoId, orden.cxp_id, monto, fecha,
-        body.metodo || 'EFECTIVO', body.caja_id, movGenericoId,
-        body.observaciones || null, req.user.id, req.user.nombre, now, now
+        body.metodo || 'EFECTIVO', body.caja_id, cajaInfo.nombre, movGenericoId,
+        body.observaciones || null, req.user.id, req.user.nombre, now
       );
 
       // Recalcular estado de CxP
@@ -750,6 +755,16 @@ module.exports = function mountOrdenes(app, db, opts) {
     const tx = db.transaction(() => {
       // Marcar todos los movs asociados como deleted
       db.prepare('UPDATE movs SET deleted = 1, updated_at = ? WHERE orden_id = ? AND deleted = 0').run(now, orden.id);
+      // Si tenía CxP (PENDIENTE_PAGO): revertir sus abonos —también los hechos desde
+      // la vista de CxP, cuyo mov no lleva orden_id— y dejar la cuenta CANCELADA.
+      if (orden.cxp_id) {
+        const abonos = db.prepare('SELECT id, mov_id FROM cxp_abonos WHERE cxp_id = ? AND deleted = 0').all(orden.cxp_id);
+        for (const ab of abonos) {
+          db.prepare('UPDATE movs SET deleted = 1, updated_at = ? WHERE (id = ? OR abono_id = ?) AND deleted = 0').run(now, ab.mov_id, ab.id);
+          db.prepare('UPDATE cxp_abonos SET deleted = 1, updated_at = ? WHERE id = ?').run(now, ab.id);
+        }
+        db.prepare("UPDATE cxp SET estado = 'CANCELADA', updated_at = ? WHERE id = ?").run(now, orden.cxp_id);
+      }
       // Marcar items como deleted
       db.prepare('UPDATE ordenes_compra_items SET deleted = 1, updated_at = ? WHERE orden_id = ?').run(now, orden.id);
       // Marcar orden como cancelada

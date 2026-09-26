@@ -7,6 +7,7 @@ const express = require('express');
 const http = require('node:http');
 const Database = require('better-sqlite3');
 const mountOrdenes = require('../routes/ordenes');
+const mountCxp = require('../routes/cxp');
 
 // Esquemas copiados de server.js (ordenes_compra, ordenes_compra_items,
 // proveedor_productos, cxp, cxp_abonos, terceros, cajas) y de init-db.js
@@ -109,6 +110,17 @@ CREATE TABLE IF NOT EXISTS cxp_abonos (
   updated_at INTEGER NOT NULL,
   deleted INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS cxp_facturas (
+  id TEXT PRIMARY KEY,
+  cxp_id TEXT NOT NULL,
+  numero TEXT,
+  uuid TEXT,
+  fecha TEXT,
+  monto REAL NOT NULL,
+  notas TEXT,
+  updated_at INTEGER NOT NULL,
+  deleted INTEGER DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS terceros (
   id TEXT PRIMARY KEY,
   nombre TEXT NOT NULL,
@@ -194,6 +206,8 @@ function setup(rol = 'admin') {
     requireAuth: pass, requirePin: pass, requireAdmin: pass,
     audit: () => {}, newId, userCanUseCaja: () => true,
   });
+  // CxP montado en el mismo app/BD: las CxP de ordenes se pueden pagar desde ahi.
+  mountCxp(app, db, { requireAuth: pass, requirePin: pass, requireAdmin: pass, audit: () => {}, newId });
   const server = app.listen(0);
   return { db, server, port: server.address().port };
 }
@@ -471,5 +485,236 @@ test('ordenes: POST /cancelar y DELETE revierten movs e items', async () => {
     assert.deepStrictEqual(r.body.ordenes.map(o => o.id), [idCancelar]);
     r = await call(port, 'GET', `/api/ordenes/${idBorrar}`);
     assert.strictEqual(r.status, 404);
+  } finally { server.close(); }
+});
+
+// ---------------------------------------------------------------------------
+// Rama PENDIENTE_PAGO (anticipo insuficiente o sin anticipo → CxP) y su pago.
+// Antes de este fix los INSERT de terceros/cxp/movs/cxp_abonos de /cerrar y
+// /pagar no coincidían con el esquema real y fallaban con SqliteError.
+// ---------------------------------------------------------------------------
+
+// Dos productos: AZUCAR 5 x 20 = 100 y HARINA 10 x 90 = 900 → total real 1000
+const ITEMS_DOS = [
+  { producto: 'HARINA', unidad: 'KG', cantidad_estimada: 10, precio_estimado: 90 },
+  { producto: 'AZUCAR', unidad: 'KG', cantidad_estimada: 5, precio_estimado: 20 },
+];
+function cerrarDos(db, port, id) {
+  const its = db.prepare('SELECT * FROM ordenes_compra_items WHERE orden_id = ? AND deleted = 0 ORDER BY producto').all(id);
+  return call(port, 'POST', `/api/ordenes/${id}/cerrar`, {
+    items: [
+      { id: its[0].id, cantidad_real: 5, precio_real: 20, categoria_contable: 'MERCANCIA' },
+      { id: its[1].id, cantidad_real: 10, precio_real: 90, categoria_contable: 'MERCANCIA' },
+    ],
+    fecha_cierre: HOY,
+  });
+}
+
+test('ordenes: /cerrar con anticipo insuficiente -> PENDIENTE_PAGO + CxP por el saldo; /pagar parcial y luego el resto -> PAGADA', async () => {
+  const { db, server, port } = setup();
+  try {
+    let r = await call(port, 'POST', '/api/ordenes', ordenBase({ monto_entregado: 500 }));
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const id = r.body.orden.id;
+    const item = db.prepare('SELECT * FROM ordenes_compra_items WHERE orden_id = ? AND deleted = 0').get(id);
+    const movAnticipo = db.prepare('SELECT mov_salida_id FROM ordenes_compra WHERE id = ?').get(id).mov_salida_id;
+
+    // CERRAR: real 10 x 90 = 900 > anticipo 500 -> CxP por 400
+    r = await call(port, 'POST', `/api/ordenes/${id}/cerrar`, {
+      items: [{ id: item.id, cantidad_real: 10, precio_real: 90, categoria_contable: 'MERCANCIA' }],
+      fecha_cierre: HOY, fecha_vencimiento: '2026-12-31', observaciones: 'Llega factura el lunes',
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.estadoFinal, 'PENDIENTE_PAGO');
+    const cxpId = r.body.cxpIdCreada;
+    assert.ok(cxpId);
+
+    const orden = db.prepare('SELECT * FROM ordenes_compra WHERE id = ?').get(id);
+    assert.strictEqual(orden.estado, 'PENDIENTE_PAGO');
+    assert.strictEqual(orden.cxp_id, cxpId);
+    assert.strictEqual(orden.monto_real, 900);
+    // El anticipo sigue vivo (ya salió de caja) y al cerrar no se crean movs por item
+    assert.strictEqual(db.prepare('SELECT deleted FROM movs WHERE id = ?').get(movAnticipo).deleted, 0);
+    assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM movs WHERE orden_id = ? AND src = 'compra-item'").get(id).n, 0);
+
+    const cxp = db.prepare('SELECT * FROM cxp WHERE id = ?').get(cxpId);
+    assert.strictEqual(cxp.direccion, 'PAGAR');
+    assert.strictEqual(cxp.tercero_id, 't1');
+    assert.strictEqual(cxp.tercero_nombre, 'PROVEEDOR UNO');
+    assert.strictEqual(cxp.monto_total, 400);
+    assert.strictEqual(cxp.fecha_creacion, HOY);
+    assert.strictEqual(cxp.fecha_vencimiento, '2026-12-31');
+    assert.strictEqual(cxp.estado, 'PENDIENTE');
+    assert.strictEqual(cxp.categoria_id, 'cat-merc'); // id de la categoría, igual que la vista de CxP
+    assert.strictEqual(cxp.observaciones, `Vinculada a orden ${id} · Llega factura el lunes`);
+
+    // PAGAR parcial 150 desde el banco
+    r = await call(port, 'POST', `/api/ordenes/${id}/pagar`, { monto: 150, caja_id: 'caja-banco', metodo: 'TRANSFERENCIA', fecha: HOY, observaciones: 'abono 1' });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.estadoOrdenFinal, 'PENDIENTE_PAGO');
+    assert.strictEqual(r.body.saldoNuevo, 250);
+    const ab1 = db.prepare('SELECT * FROM cxp_abonos WHERE id = ?').get(r.body.abonoId);
+    assert.strictEqual(ab1.cxp_id, cxpId);
+    assert.strictEqual(ab1.monto, 150);
+    assert.strictEqual(ab1.fecha, HOY);
+    assert.strictEqual(ab1.caja_id, 'caja-banco');
+    assert.strictEqual(ab1.caja_nombre, 'Banco BBVA');
+    assert.strictEqual(ab1.metodo, 'TRANSFERENCIA');
+    assert.strictEqual(ab1.notas, 'abono 1');
+    assert.strictEqual(ab1.mov_id, r.body.movGenericoId);
+    const mov1 = db.prepare('SELECT * FROM movs WHERE id = ?').get(r.body.movGenericoId);
+    assert.strictEqual(mov1.tipo, 'GASTO');
+    assert.strictEqual(mov1.categoria, 'MERCANCIA');
+    assert.strictEqual(mov1.monto, 150);
+    assert.strictEqual(mov1.caja, 'caja-banco');
+    assert.strictEqual(mov1.metodo, 'TRANSFERENCIA');
+    assert.strictEqual(mov1.src, 'compra-pago');
+    assert.strictEqual(mov1.orden_id, id);
+    assert.strictEqual(mov1.abono_id, r.body.abonoId);
+    assert.strictEqual(db.prepare('SELECT estado FROM cxp WHERE id = ?').get(cxpId).estado, 'PARCIAL');
+
+    // Exceso -> 400; caja inexistente -> 400 (sin crear nada)
+    r = await call(port, 'POST', `/api/ordenes/${id}/pagar`, { monto: 300, caja_id: 'caja-principal' });
+    assert.strictEqual(r.status, 400);
+    r = await call(port, 'POST', `/api/ordenes/${id}/pagar`, { monto: 10, caja_id: 'no-existe' });
+    assert.strictEqual(r.status, 400);
+    assert.strictEqual(r.body.error, 'Caja no encontrada');
+    assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM cxp_abonos WHERE cxp_id = ?').get(cxpId).n, 1);
+
+    // PAGAR el resto -> orden y CxP PAGADAS
+    r = await call(port, 'POST', `/api/ordenes/${id}/pagar`, { monto: 250, caja_id: 'caja-principal', fecha: HOY });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.estadoOrdenFinal, 'PAGADA');
+    assert.strictEqual(db.prepare('SELECT estado FROM ordenes_compra WHERE id = ?').get(id).estado, 'PAGADA');
+    assert.strictEqual(db.prepare('SELECT estado FROM cxp WHERE id = ?').get(cxpId).estado, 'PAGADA');
+
+    // Lo que salió de caja por la orden = monto real (500 anticipo + 150 + 250)
+    const gastado = db.prepare("SELECT ROUND(SUM(monto), 2) AS t FROM movs WHERE orden_id = ? AND tipo = 'GASTO' AND deleted = 0").get(id).t;
+    assert.strictEqual(gastado, 900);
+
+    r = await call(port, 'POST', `/api/ordenes/${id}/pagar`, { monto: 1, caja_id: 'caja-principal' });
+    assert.strictEqual(r.status, 400);
+  } finally { server.close(); }
+});
+
+test('ordenes: sin anticipo ni proveedor_id -> /cerrar da de alta al proveedor (una sola vez) + CxP por el total; /pagar total -> movs por item; DELETE revierte todo', async () => {
+  const { db, server, port } = setup();
+  try {
+    const nueva = (nombre) => ordenBase({ proveedor_id: null, proveedor_nombre: nombre, items: ITEMS_DOS });
+
+    let r = await call(port, 'POST', '/api/ordenes', nueva('Granos Del Norte'));
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const id = r.body.orden.id;
+    r = await cerrarDos(db, port, id);
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.estadoFinal, 'PENDIENTE_PAGO');
+    const cxpId = r.body.cxpIdCreada;
+
+    const t = db.prepare("SELECT * FROM terceros WHERE nombre = 'Granos Del Norte'").all();
+    assert.strictEqual(t.length, 1);
+    assert.strictEqual(t[0].tipo, 'PROVEEDOR');
+    assert.strictEqual(t[0].categoria_sugerida, 'MERCANCIA');
+    assert.strictEqual(t[0].activo, 1);
+    const cxp = db.prepare('SELECT * FROM cxp WHERE id = ?').get(cxpId);
+    assert.strictEqual(cxp.tercero_id, t[0].id);
+    assert.strictEqual(cxp.monto_total, 1000);
+    // Sin anticipo, cerrar no mueve caja
+    assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM movs WHERE orden_id = ? AND deleted = 0').get(id).n, 0);
+
+    // Segunda orden al mismo proveedor con otras mayúsculas: reusa el tercero
+    r = await call(port, 'POST', '/api/ordenes', nueva('GRANOS DEL NORTE'));
+    r = await cerrarDos(db, port, r.body.orden.id);
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(db.prepare("SELECT COUNT(*) AS n FROM terceros WHERE LOWER(nombre) = 'granos del norte'").get().n, 1);
+
+    // PAGAR total de la primera -> un mov por item, todos ligados al abono
+    r = await call(port, 'POST', `/api/ordenes/${id}/pagar`, { monto: 1000, caja_id: 'caja-principal', metodo: 'EFECTIVO', fecha: HOY });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.estadoOrdenFinal, 'PAGADA');
+    const abonoId = r.body.abonoId;
+    const movsItem = db.prepare("SELECT * FROM movs WHERE orden_id = ? AND src = 'compra-item' AND deleted = 0 ORDER BY monto").all(id);
+    assert.deepStrictEqual(movsItem.map(m => m.monto), [100, 900]);
+    assert.ok(movsItem.every(m => m.abono_id === abonoId && m.tipo === 'GASTO' && m.caja === 'caja-principal'));
+    const ab = db.prepare('SELECT * FROM cxp_abonos WHERE id = ?').get(abonoId);
+    assert.strictEqual(ab.monto, 1000);
+    assert.strictEqual(ab.caja_nombre, 'Caja Principal');
+    assert.ok(movsItem.some(m => m.id === ab.mov_id));
+
+    // DELETE de la orden pagada revierte movs, abono y CxP
+    r = await call(port, 'DELETE', `/api/ordenes/${id}`);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.cxp_borrada, cxpId);
+    assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM movs WHERE orden_id = ? AND deleted = 0').get(id).n, 0);
+    assert.strictEqual(db.prepare('SELECT deleted FROM cxp_abonos WHERE id = ?').get(abonoId).deleted, 1);
+    assert.strictEqual(db.prepare('SELECT deleted FROM cxp WHERE id = ?').get(cxpId).deleted, 1);
+  } finally { server.close(); }
+});
+
+test('ordenes: /cancelar una orden PENDIENTE_PAGO con abonos -> CxP CANCELADA, abonos y movs revertidos', async () => {
+  const { db, server, port } = setup();
+  try {
+    let r = await call(port, 'POST', '/api/ordenes', ordenBase());
+    const id = r.body.orden.id;
+    const item = db.prepare('SELECT id FROM ordenes_compra_items WHERE orden_id = ? AND deleted = 0').get(id);
+    r = await call(port, 'POST', `/api/ordenes/${id}/cerrar`, { items: [{ id: item.id, cantidad_real: 10, precio_real: 100 }], fecha_cierre: HOY });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const cxpId = r.body.cxpIdCreada;
+    // Un abono desde Compras y otro desde la vista de CxP (su mov no lleva orden_id)
+    r = await call(port, 'POST', `/api/ordenes/${id}/pagar`, { monto: 300, caja_id: 'caja-principal' });
+    const abono1 = r.body.abonoId;
+    r = await call(port, 'POST', `/api/cxp/${cxpId}/abonos`, { monto: 200, caja_id: 'caja-banco' });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const abono2 = r.body.id, movAbono2 = r.body.mov_id;
+
+    r = await call(port, 'POST', `/api/ordenes/${id}/cancelar`, {});
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(db.prepare('SELECT estado FROM ordenes_compra WHERE id = ?').get(id).estado, 'CANCELADA');
+    assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM movs WHERE orden_id = ? AND deleted = 0').get(id).n, 0);
+    assert.strictEqual(db.prepare('SELECT deleted FROM movs WHERE id = ?').get(movAbono2).deleted, 1);
+    assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM cxp_abonos WHERE id IN (?, ?) AND deleted = 0').get(abono1, abono2).n, 0);
+    assert.strictEqual(db.prepare('SELECT estado FROM cxp WHERE id = ?').get(cxpId).estado, 'CANCELADA');
+    // Ya no cuenta como deuda
+    r = await call(port, 'GET', '/api/cxp/stats/resumen');
+    assert.strictEqual(r.body.stats.PAGAR.total_cuentas, 0);
+  } finally { server.close(); }
+});
+
+test('ordenes+cxp: abonar la CxP de una orden desde CxP la marca PAGADA; borrar el abono la regresa a POR PAGAR y revierte todos sus movs; la CxP vinculada no se borra desde CxP', async () => {
+  const { db, server, port } = setup();
+  try {
+    let r = await call(port, 'POST', '/api/ordenes', ordenBase({ items: ITEMS_DOS }));
+    const id = r.body.orden.id;
+    r = await cerrarDos(db, port, id);
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const cxpId = r.body.cxpIdCreada;
+
+    // Abono total desde la vista de CxP -> la orden pasa a PAGADA
+    r = await call(port, 'POST', `/api/cxp/${cxpId}/abonos`, { monto: 1000, caja_id: 'caja-principal', fecha: HOY });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.estado, 'PAGADA');
+    assert.strictEqual(db.prepare('SELECT estado FROM ordenes_compra WHERE id = ?').get(id).estado, 'PAGADA');
+    // El mov del abono lleva el NOMBRE de la categoría (las vistas buscan por nombre), no su id
+    assert.strictEqual(db.prepare('SELECT categoria FROM movs WHERE id = ?').get(r.body.mov_id).categoria, 'MERCANCIA');
+    // Borrar ese abono -> la orden vuelve a POR PAGAR
+    r = await call(port, 'DELETE', `/api/cxp/abonos/${r.body.id}`);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(db.prepare('SELECT estado FROM ordenes_compra WHERE id = ?').get(id).estado, 'PENDIENTE_PAGO');
+
+    // Pago total desde Compras (un mov por item) y luego borrar ese abono desde CxP:
+    // se revierten TODOS los movs del abono, no solo el primero
+    r = await call(port, 'POST', `/api/ordenes/${id}/pagar`, { monto: 1000, caja_id: 'caja-principal', fecha: HOY });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    const abonoId = r.body.abonoId;
+    assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM movs WHERE abono_id = ? AND deleted = 0').get(abonoId).n, 2);
+    r = await call(port, 'DELETE', `/api/cxp/abonos/${abonoId}`);
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(db.prepare('SELECT COUNT(*) AS n FROM movs WHERE abono_id = ? AND deleted = 0').get(abonoId).n, 0);
+    assert.strictEqual(db.prepare('SELECT estado FROM ordenes_compra WHERE id = ?').get(id).estado, 'PENDIENTE_PAGO');
+
+    // La CxP de una orden solo se elimina desde Compras
+    r = await call(port, 'DELETE', `/api/cxp/${cxpId}`);
+    assert.strictEqual(r.status, 409);
+    assert.match(r.body.error, /Compras/);
+    assert.strictEqual(db.prepare('SELECT deleted FROM cxp WHERE id = ?').get(cxpId).deleted, 0);
   } finally { server.close(); }
 });

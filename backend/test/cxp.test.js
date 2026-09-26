@@ -119,6 +119,33 @@ CREATE TABLE IF NOT EXISTS terceros (
   updated_at INTEGER NOT NULL,
   deleted INTEGER DEFAULT 0
 );
+-- cxp.js consulta ordenes_compra para las cuentas creadas desde Compras
+CREATE TABLE IF NOT EXISTS ordenes_compra (
+  id TEXT PRIMARY KEY,
+  fecha TEXT NOT NULL,
+  numero_orden TEXT,
+  proveedor_id TEXT,
+  proveedor_nombre TEXT NOT NULL,
+  comprador_nombre TEXT,
+  metodo_pago TEXT NOT NULL,
+  caja_id TEXT NOT NULL,
+  caja_nombre TEXT,
+  monto_estimado REAL DEFAULT 0,
+  monto_entregado REAL DEFAULT 0,
+  monto_real REAL DEFAULT 0,
+  ajuste REAL DEFAULT 0,
+  estado TEXT NOT NULL DEFAULT 'BORRADOR',
+  mov_salida_id TEXT,
+  mov_ajuste_id TEXT,
+  cxp_id TEXT,
+  observaciones TEXT,
+  fecha_cierre TEXT,
+  user_id TEXT,
+  user_nombre TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  deleted INTEGER DEFAULT 0
+);
 `;
 
 function setup(rol = 'admin') {
@@ -194,6 +221,8 @@ test('cxp: POST crea cuenta PAGAR con factura y abono_inicial -> 200, queda PARC
     assert.strictEqual(mov.cxp_id, id);
     assert.strictEqual(mov.abono_id, abono.id);
     assert.strictEqual(mov.concepto, 'Pago a: PROVEEDOR UNO (REF1)');
+    // movs.categoria = NOMBRE de la categoría (las vistas buscan por nombre), no el id 'cat-luz'
+    assert.strictEqual(mov.categoria, 'LUZ');
 
     // Detalle por HTTP enriquecido
     r = await call(port, 'GET', `/api/cxp/${id}`);

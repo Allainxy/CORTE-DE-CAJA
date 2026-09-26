@@ -11,6 +11,52 @@ El proyecto sigue [versionado semántico](https://semver.org/lang/es/) — `MAYO
 
 ---
 
+## [1.17.0] — 2026-09-26
+
+### 📌 Resumen ejecutivo
+
+Release de **corrección de datos y respaldos**. Se compiló cada consulta SQL del backend (492) contra el esquema real de producción y se corrigieron todas las que fallaban. También se registran aquí los cambios desplegados entre junio y septiembre que no tenían entrada.
+
+**Lo más importante para el usuario:**
+- **Compras: cerrar una orden "por pagar" ya funciona.** Si el anticipo no cubría el total (o no había anticipo), cerrar la orden fallaba con un error de base de datos, y pagarla después también. Ahora se crea la cuenta por pagar y se puede abonar desde Compras o desde CxP; la orden pasa a PAGADA en ambos casos.
+- **Los respaldos manuales ahora son completos.** "Descargar BD" y "Crear respaldo ahora" copiaban el archivo de la base sin los cambios más recientes que SQLite aún guarda en su bitácora (WAL). Ahora usan la copia en caliente de SQLite, igual que el respaldo nocturno. El respaldo previo a cada deploy también.
+- **Inteligencia: "Top proveedores" y "Antigüedad de CxP" ya muestran datos.** Siempre salían vacíos/en ceros por consultas a columnas inexistentes.
+- **Restaurar BD completa queda deshabilitada por seguridad.** Corrección a la entrada 1.16.2: la restauración **nunca llegó a funcionar** (fallaba antes de tocar nada). Al revisarla se encontró que, de funcionar, podía corromper la base; ahora responde con un mensaje claro en lugar de un error técnico, hasta rehacerla de forma segura.
+
+### 🐛 Fixed
+
+- **Órdenes de compra — `POST /api/ordenes/:id/cerrar` (rama PENDIENTE_PAGO)**: los `INSERT` en `terceros` y `cxp` usaban columnas que no existen (`created_at`, `categoria`, `fecha_emision`, `prioridad`…). Ahora usan el esquema real; `cxp.categoria_id` guarda el **id** de la categoría (como la vista de CxP) y el saldo se redondea a centavos.
+- **Órdenes de compra — `POST /api/ordenes/:id/pagar`**: el `INSERT` en `movs` tenía 16 valores para 17 columnas y el de `cxp_abonos` usaba `observaciones`/`created_at` inexistentes. Corregidos (las notas van a `cxp_abonos.notas` y se guarda `caja_nombre`). Una caja inexistente ahora responde 400 en lugar de crear un movimiento huérfano.
+- **Órdenes ↔ CxP**: abonar (o borrar un abono de) la CxP de una orden **desde la vista de CxP** ahora actualiza el estado de la orden (PAGADA / POR PAGAR). Antes la orden se quedaba "por pagar" para siempre.
+- **CxP — borrar abono**: revertía solo el movimiento principal; el pago total de una orden crea un movimiento por producto y los demás seguían descontando de caja. Ahora se revierten todos los movimientos ligados al abono.
+- **CxP — movimientos de abono**: guardaban el **id** de la categoría (`g-mer`) en lugar del **nombre** (`MERCANCIA`), por lo que no se agrupaban en reportes. Ahora guardan el nombre.
+- **CxP — eliminar una cuenta creada por una orden**: se bloquea (409) con un mensaje que indica eliminarla desde Compras, para no dejar la orden sin cuenta.
+- **Órdenes — `POST /api/ordenes/:id/cancelar`**: si la orden tenía CxP, ahora revierte sus abonos y deja la cuenta como CANCELADA (antes quedaba viva).
+- **Inteligencia (`/api/inteligencia/dashboard`)**: "Top proveedores" usaba `o.total_real` (es `monto_real`); "Antigüedad de CxP" usaba `fecha/total/monto_pagado` (son `fecha_creacion/monto_total` + suma de abonos). Además los errores ya no se ocultan: se registran en el log.
+- **Arranque del servidor**: se eliminó un sembrado automático de categorías "MERCANCIA - <área>" que fallaba en cada reinicio (`groups has no column named icon`) y nunca creó nada. No cambia el catálogo actual.
+
+### 🔒 Security / datos
+
+- **Respaldos consistentes con WAL**: `GET /api/backup/full-db` y `POST /api/backup/auto-run` usan `db.backup()`; `deploy.sh` usa `sqlite3 .backup` para el respaldo pre-deploy. El comando de rollback que imprime `deploy.sh` ahora detiene el proceso y borra el `-wal`/`-shm` viejo antes de copiar el respaldo (copiarlo con el servidor corriendo podía corromper la BD).
+- **`POST /api/backup/restore-full` deshabilitado (503)** con explicación en el código de los pasos necesarios para reactivarlo de forma segura.
+
+### 📦 Desplegado entre 1.16.2 y esta versión (sin entrada previa)
+
+- IDs anti-colisión con `crypto.randomUUID()`; error handler global y migraciones protegidas (jun).
+- Redondeo consistente a centavos en saldos; resolución de conflictos de sincronización *last-write-wins* con reloj lógico (ago).
+- CSP permite `cdnjs.cloudflare.com` (exportar a Excel); `.gitattributes` fuera del web root; al expirar la sesión la app vuelve al login (ago).
+- Suite de tests con `node --test` y extracción de `server.js` a 8 routers (`routes/*.js`), verificados byte a byte (ago–sep).
+
+### 🔧 Técnico
+
+- `backend/routes/ordenes.js`: `INSERT` de `terceros`, `cxp`, `movs` y `cxp_abonos` alineados al esquema; validación de caja en `/pagar`; `/cancelar` maneja la CxP vinculada.
+- `backend/routes/cxp.js`: `syncOrdenVinculada()`; nombre de categoría en el mov del abono; borrado de abono por `abono_id`; 409 al borrar CxP de una orden.
+- `backend/server.js`: consultas de Inteligencia; `db.backup()` en respaldos; restore-full deshabilitado; sin sembrado de categorías.
+- `deploy.sh`: respaldo con `sqlite3 .backup`; rollback seguro.
+- Tests: 4 casos nuevos de integración órdenes↔CxP (suite **52/52**). Chequeo estático: las 492 sentencias SQL estáticas compilan contra el esquema de producción.
+
+---
+
 ## [1.16.2] — 2026-06-10
 
 ### 📌 Resumen ejecutivo

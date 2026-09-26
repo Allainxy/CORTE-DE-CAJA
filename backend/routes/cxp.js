@@ -201,6 +201,12 @@ module.exports = function mountCxp(app, db, opts) {
     if (req.user.rol !== 'admin' && req.user.rol !== 'gerente') return res.status(403).json({ error: 'Sin permiso' });
     const cxp = db.prepare('SELECT * FROM cxp WHERE id = ? AND deleted = 0').get(req.params.id);
     if (!cxp) return res.status(404).json({ error: 'No encontrada' });
+    // Una cuenta creada por una orden de compra se elimina desde Compras (que revierte
+    // también la orden); borrarla aquí dejaría la orden POR PAGAR sin cuenta.
+    const ordenVinc = db.prepare('SELECT id, numero_orden FROM ordenes_compra WHERE cxp_id = ? AND deleted = 0').get(req.params.id);
+    if (ordenVinc) {
+      return res.status(409).json({ error: `Esta cuenta pertenece a la orden de compra ${ordenVinc.numero_orden || ordenVinc.id}. Elimínala desde Compras.` });
+    }
 
     const abonos = db.prepare('SELECT id, mov_id FROM cxp_abonos WHERE cxp_id = ? AND deleted = 0').all(req.params.id);
     // Borrar todos los abonos y sus movs asociados
@@ -284,13 +290,19 @@ module.exports = function mountCxp(app, db, opts) {
     const now = Date.now();
     const fechaUse = fecha || new Date().toISOString().slice(0, 10);
 
+    // movs.categoria guarda el NOMBRE de la categoría (así la buscan todas las vistas);
+    // cxp.categoria_id guarda su id → resolverlo (si no existe se conserva tal cual).
+    const catNombre = cxp.categoria_id
+      ? (db.prepare('SELECT nombre FROM cats WHERE id = ?').get(cxp.categoria_id)?.nombre || cxp.categoria_id)
+      : '';
+
     // Crear mov vinculado (columnas: usar 'usuario', no 'user_nombre')
     db.prepare(`INSERT INTO movs (
       id, fecha, tipo, monto, categoria, concepto, caja, metodo, usuario, notas, src,
       user_id, cxp_id, abono_id, updated_at, deleted
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'cxp', ?, ?, ?, ?, 0)`).run(
       movId, fechaUse, tipoMov, m,
-      cxp.categoria_id || '',
+      catNombre,
       conceptoMov + (referencia ? ` (${referencia})` : ''),
       caja_id,
       (metodo || 'EFECTIVO').slice(0, 20),
@@ -318,6 +330,17 @@ module.exports = function mountCxp(app, db, opts) {
     return { id: abonoId, mov_id: movId };
   }
 
+  // Si la cuenta nació de una orden de compra (Compras → cerrar con saldo), mantener
+  // el estado de la orden alineado al abonar o borrar abonos desde esta vista.
+  function syncOrdenVinculada(cxpId, estadoCxp) {
+    const orden = db.prepare("SELECT id, estado FROM ordenes_compra WHERE cxp_id = ? AND deleted = 0 AND estado IN ('PENDIENTE_PAGO', 'PAGADA')").get(cxpId);
+    if (!orden) return;
+    const estadoOrden = estadoCxp === 'PAGADA' ? 'PAGADA' : 'PENDIENTE_PAGO';
+    if (estadoOrden !== orden.estado) {
+      db.prepare('UPDATE ordenes_compra SET estado = ?, updated_at = ? WHERE id = ?').run(estadoOrden, Date.now(), orden.id);
+    }
+  }
+
   app.post('/api/cxp/:id/abonos', auth, (req, res) => {
     if (req.user.rol === 'consulta') return res.status(403).json({ error: 'Sin permiso' });
     try {
@@ -325,6 +348,7 @@ module.exports = function mountCxp(app, db, opts) {
       // Recalcular estado
       const nuevoEstado = calcularEstado(req.params.id);
       db.prepare('UPDATE cxp SET estado = ?, updated_at = ? WHERE id = ?').run(nuevoEstado, Date.now(), req.params.id);
+      syncOrdenVinculada(req.params.id, nuevoEstado);
       audit(req, 'create', 'abono', result.id, JSON.stringify({ cxp_id: req.params.id, monto: req.body.monto }));
       res.json({ ok: true, ...result, estado: nuevoEstado });
     } catch (e) {
@@ -337,15 +361,15 @@ module.exports = function mountCxp(app, db, opts) {
     const ab = db.prepare('SELECT * FROM cxp_abonos WHERE id = ? AND deleted = 0').get(req.params.id);
     if (!ab) return res.status(404).json({ error: 'Abono no encontrado' });
 
-    // Borrar el mov asociado
-    if (ab.mov_id) {
-      db.prepare('UPDATE movs SET deleted = 1, updated_at = ? WHERE id = ?').run(Date.now(), ab.mov_id);
-    }
+    // Borrar los movs del abono: el de mov_id y cualquier otro ligado por abono_id
+    // (el pago total de una orden desde Compras crea un mov por producto).
+    db.prepare('UPDATE movs SET deleted = 1, updated_at = ? WHERE (id = ? OR abono_id = ?) AND deleted = 0').run(Date.now(), ab.mov_id, ab.id);
     // Borrar el abono
     db.prepare('UPDATE cxp_abonos SET deleted = 1, updated_at = ? WHERE id = ?').run(Date.now(), req.params.id);
     // Recalcular estado de la CxP padre
     const nuevoEstado = calcularEstado(ab.cxp_id);
     db.prepare('UPDATE cxp SET estado = ?, updated_at = ? WHERE id = ?').run(nuevoEstado, Date.now(), ab.cxp_id);
+    syncOrdenVinculada(ab.cxp_id, nuevoEstado);
 
     audit(req, 'delete', 'abono', req.params.id, JSON.stringify({ cxp_id: ab.cxp_id, monto: ab.monto, mov_revertido: ab.mov_id }));
     res.json({ ok: true });

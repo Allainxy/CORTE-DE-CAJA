@@ -71,7 +71,14 @@ mkdir -p "$BACKUP_DIR"
 BACKUP_FILE=""
 if [ -n "$DB_FILE" ] && [ -f "$DB_FILE" ]; then
   BACKUP_FILE="$BACKUP_DIR/kbotanas-PRE-DEPLOY-$TS.db"
-  cp "$DB_FILE" "$BACKUP_FILE"
+  # .backup de sqlite3 = copia consistente que incluye lo que aún vive en el WAL.
+  # Un cp del .db crudo puede perder las transacciones que no se han volcado.
+  if command -v sqlite3 >/dev/null 2>&1; then
+    sqlite3 "$DB_FILE" ".backup '$BACKUP_FILE'"
+  else
+    cp "$DB_FILE" "$BACKUP_FILE"
+    if [ -f "$DB_FILE-wal" ]; then cp "$DB_FILE-wal" "$BACKUP_FILE-wal"; fi
+  fi
   SIZE=$(du -h "$BACKUP_FILE" | cut -f1)
   echo "    ✓ $BACKUP_FILE ($SIZE)"
 else
@@ -175,7 +182,10 @@ echo ""
 echo "ROLLBACK (si algo se rompió en producción):"
 echo "  cd $REPO_DIR && git reset --hard $BEFORE"
 if [ -n "$BACKUP_FILE" ]; then
-  echo "  cp $BACKUP_FILE $DB_FILE"
+  # Restaurar la BD con el proceso DETENIDO y sin el -wal viejo: si no, SQLite
+  # reaplica ese WAL encima del respaldo y lo corrompe.
+  echo "  pm2 stop $PM2_NAME && rm -f $DB_FILE-wal $DB_FILE-shm && cp $BACKUP_FILE $DB_FILE && pm2 start $PM2_NAME"
+else
+  echo "  pm2 reload $PM2_NAME"
 fi
-echo "  pm2 reload $PM2_NAME"
 echo ""
