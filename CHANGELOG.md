@@ -11,6 +11,15 @@ El proyecto sigue [versionado semántico](https://semver.org/lang/es/) — `MAYO
 
 ---
 
+## [1.18.1] — 2026-09-26
+
+### 🐛 Fixed
+
+- **Los movimientos que crean Nómina, CxP y Compras en el servidor ya llegan a la copia local.** Estas vistas, tras un cambio, pedían un "refresco" (`refreshAll`) que descargaba todo con `KBotAPI.pullFull()` pero **descartaba** el resultado y aun así adelantaba el cursor `kbot_since`. El auto-sync incremental de 30 s ya no volvía a pedir esos cambios, así que p. ej. los pagos y abonos generados al **cerrar un periodo de nómina** (o lo capturado por otros usuarios justo antes) no aparecían en el dispositivo —ni en sus saldos— hasta pulsar ↻ ACTUALIZAR. Ahora `refreshAll` usa `window.kbotFullResync()` (envía lo pendiente, trae todo y lo aplica) y nunca rechaza. Ventas y Viáticos reciben la misma función aunque hoy no la usan.
+- Versión de recursos `2026-09-26b`.
+
+---
+
 ## [1.18.0] — 2026-09-26
 
 ### 📌 Resumen ejecutivo

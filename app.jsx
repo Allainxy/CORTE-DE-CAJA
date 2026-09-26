@@ -198,6 +198,11 @@ function App() {
     document.addEventListener('visibilitychange', onVis);
     return () => { clearInterval(iv); document.removeEventListener('visibilitychange', onVis); };
   }, [needsLogin]);
+  // Refresco que piden las vistas online (CxP, Compras, Nómina…) tras cambios que crean movs en el
+  // servidor. Debe APLICAR lo que trae: pullFull() a secas adelanta kbot_since y descartaba el
+  // resultado, y el auto-sync incremental ya no volvía a pedir esos cambios. Nunca rechaza.
+  const refreshAll = () => (window.kbotFullResync ? window.kbotFullResync() : Promise.resolve(false));
+
   const handleLogout = () => {
     KBotAPI.logout();
     setUser(null);
@@ -534,11 +539,11 @@ function App() {
         {active === 'categorias' && <CategoriasView cats={cats} movs={movs} groups={groups} user={user} addCategory={addCategory} deleteCategory={deleteCategory} updateCategory={updateCategory} addGroup={addGroup} deleteGroup={deleteGroup} updateGroup={updateGroup} reorderGroup={reorderGroup} budgets={budgets} setBudget={setBudget} />}
         {active === 'usuarios' && user?.rol === 'admin' && <UsersView cajas={cajas} user={user} />}
         {active === 'arqueo' && <ArqueoView cajas={cajas} user={user} saldoCaja={saldoCaja} />}
-        {active === 'cxp' && <CxpView cajas={cajas} cats={cats} groups={groups} user={user} saldoCaja={saldoCaja} refreshAll={() => KBotAPI.pullFull()} />}
-        {active === 'compras' && <ComprasView cajas={cajas} cats={cats} user={user} refreshAll={() => KBotAPI.pullFull()} />}
-          {active === 'ventas' && <VentasView cajas={cajas} user={user} refreshAll={() => KBotAPI.pullFull()} />}
-        {active === 'viaticos' && <ViaticosView cajas={cajas} user={user} refreshAll={() => KBotAPI.pullFull()} />}
-        {active === 'nomina' && <NominaView refreshAll={() => KBotAPI.pullFull()} user={user} />}
+        {active === 'cxp' && <CxpView cajas={cajas} cats={cats} groups={groups} user={user} saldoCaja={saldoCaja} refreshAll={refreshAll} />}
+        {active === 'compras' && <ComprasView cajas={cajas} cats={cats} user={user} refreshAll={refreshAll} />}
+          {active === 'ventas' && <VentasView cajas={cajas} user={user} refreshAll={refreshAll} />}
+        {active === 'viaticos' && <ViaticosView cajas={cajas} user={user} refreshAll={refreshAll} />}
+        {active === 'nomina' && <NominaView refreshAll={refreshAll} user={user} />}
         {active === 'backup' && user?.rol === 'admin' && <BackupView user={user} />}
         {active === 'importar' && user?.rol === 'admin' && <ImportExportView user={user} onImported={async () => {
           // Re-pull para actualizar movs, cajas, cats, groups
