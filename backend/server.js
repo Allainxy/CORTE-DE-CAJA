@@ -2077,12 +2077,17 @@ app.get('/api/backup/list-tables', auth, __requireAdminBackup, (req, res) => {
 app.get('/api/backup/full-db', auth, __requireAdminBackup, async (req, res) => {
   // Snapshot con la API de backup de SQLite: incluye lo que aún vive en el WAL.
   // Descargar el .db crudo entregaba la BD sin las transacciones no volcadas.
-  const tmp = __backupPath.join(__backupDir, `.tmp-download-${Date.now()}-${process.pid}.db`);
+  // Sin punto inicial: res.download ignora los dotfiles (404 al callback).
+  const tmp = __backupPath.join(__backupDir, `tmp-download-${Date.now()}-${process.pid}.db`);
   try {
     const fname = `kbotanas-backup-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.db`;
     await db.backup(tmp);
     audit(req, 'BACKUP_DOWNLOAD_DB', 'backup', '', `Descarga backup completo`);
-    res.download(tmp, fname, () => __backupFs.unlink(tmp, () => {}));
+    res.download(tmp, fname, (err) => {
+      __backupFs.unlink(tmp, () => {});
+      // Con callback, Express NO responde el error por su cuenta: sin esto la petición queda colgada
+      if (err && !res.headersSent) res.status(500).json({ error: err.message });
+    });
   } catch (e) {
     __backupFs.unlink(tmp, () => {});
     res.status(500).json({ error: e.message });
