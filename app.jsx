@@ -42,16 +42,41 @@ function App() {
     return () => window.removeEventListener('kbot-session-expired', onExpired);
   }, []);
 
+  // La BD del servidor se restauró (epoch distinto o 409 DB_EPOCH_STALE): reconstruir la
+  // copia local y recargar para descartar listas y formularios armados con datos viejos.
+  useEffect(() => {
+    const onRestored = async () => {
+      if (window.__kbotResetting) return;
+      window.__kbotResetting = true;
+      try {
+        await KBotAPI.performReset(); // sin reset pendiente (otra pestaña ya lo hizo) solo recarga
+        window.location.reload();
+      } catch (e) {
+        // Sin recargar (evita un bucle): con el reset pendiente la app no envía ni trae nada
+        // hasta el próximo arranque, que lo reintenta
+        console.warn('Reconstrucción local falló; se reintentará al volver a abrir la app', e);
+      }
+    };
+    window.addEventListener('kbot-db-restored', onRestored);
+    return () => window.removeEventListener('kbot-db-restored', onRestored);
+  }, []);
+
   // Load on boot
   useEffect(() => {
     if (needsLogin) return;
     (async () => {
+      // La BD del servidor se restauró desde un respaldo: vaciar la copia local (y mandar a
+      // revisión la cola vieja) antes de usarla. Si falla, queda pendiente para el próximo arranque.
+      if (KBotAPI.resetPending()) {
+        try { await KBotAPI.performReset(); } catch (e) { console.warn('Reconstrucción local falló; se reintentará', e); }
+      }
       let m = await KBotDB.getAll('movs');
       let c = await KBotDB.getAll('cats');
       let g = await KBotDB.getAll('groups');
       let cj = await KBotDB.getAll('cajas');
       let b = await KBotDB.getAll('budgets');
-      if (c.length === 0) {
+      // Categorías de ejemplo solo sin servidor: con servidor quedarían como fantasmas locales
+      if (c.length === 0 && !KBotAPI.enabled()) {
         c = window.KBotSeed.CATS.slice();
         await KBotDB.bulkPut('cats', c);
       }
@@ -106,6 +131,8 @@ function App() {
       // Exponer función global de resync que cualquier vista puede llamar
       window.kbotFullResync = async () => {
         try {
+          await KBotAPI.flushQueue(); // verifica el epoch (restauración) y envía lo pendiente
+          if (KBotAPI.resetPending()) return false; // la app va a reconstruir y recargar
           const r = await KBotAPI.pullFull();
           await processSyncResult(r);
           return true;
@@ -119,6 +146,7 @@ function App() {
       window.kbotLightSync = async () => {
         try {
           await KBotAPI.flushQueue();
+          if (KBotAPI.resetPending()) return false; // restauración detectada: la app reconstruye y recarga
           const r = await KBotAPI.pull();
           await processSyncResult(r);
           return true;
@@ -132,6 +160,7 @@ function App() {
         try {
           setSyncing(true);
           await KBotAPI.flushQueue();
+          if (KBotAPI.resetPending()) { setSyncing(false); return; } // restauración detectada: reconstruye y recarga
           const bdVacia = (c.length === 0 || cj.length === 0);
           const r = bdVacia ? await KBotAPI.pullFull() : await KBotAPI.pull();
           if (bdVacia) console.info('🔄 BD local vacía, sync completo desde servidor');
@@ -493,6 +522,7 @@ function App() {
       <main className="main-area">
         <TopBar installEvt={installEvt} onInstall={promptInstall} movsCount={filteredMovs.length} user={user} onLogout={handleLogout} syncing={syncing}
           cajas={cajas} filterCaja={filterCaja} setFilterCaja={setFilterCaja} />
+        <RestoreNotice user={user} />
         {active === 'dashboard' && <DashboardView movs={filteredMovs} cats={cats} cajas={cajas} saldoCaja={saldoCaja} setFilterCaja={setFilterCaja} setActive={setActive} openCapture={openCapture} />}
         {active === 'movs' && <MovsListView movs={filteredMovs} cats={cats} cajas={cajas} onEdit={editMov} onDelete={deleteMov} user={user} />}
         {active === 'diario' && <DailyView movs={filteredMovs} cats={cats} cajas={cajas} />}
@@ -662,6 +692,98 @@ function TopBar({ installEvt, onInstall, movsCount, user, onLogout, syncing, caj
             <span className="user-dot" />
             <span>{user.nombre}</span>
             <button className="link-btn" onClick={onLogout} title="Cerrar sesión">↩</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Aviso tras una restauración de la BD del servidor y revisión de los cambios offline de
+// este dispositivo que quedaron sin enviar: no se reenvían solos porque se hicieron sobre
+// datos de antes de la restauración y podrían revivir registros.
+function describeQueuedOp(op) {
+  const b = op.body || {};
+  if (op.method === 'POST' && op.path === '/api/movs') {
+    return `${b.tipo || 'MOV'} $${(Number(b.monto) || 0).toFixed(2)} · ${b.categoria || '—'} · ${b.fecha || ''}${b.concepto ? ' · ' + b.concepto : ''}${b.caja ? ' · ' + b.caja : ''}`;
+  }
+  if (op.path === '/api/movs/bulk') return `Importación de ${(b.items || []).length} movimientos`;
+  if (op.method === 'DELETE' && op.path.startsWith('/api/movs/')) return 'Borrar movimiento ' + op.path.split('/').pop();
+  return `${op.method} ${op.path}${b.nombre ? ' · ' + b.nombre : ''}`;
+}
+
+function RestoreNotice({ user }) {
+  const readNotice = () => { try { return JSON.parse(localStorage.getItem('kbot_restore_notice') || 'null'); } catch (_) { return null; } };
+  const [notice, setNotice] = useState(readNotice);
+  const [review, setReview] = useState(() => KBotAPI.reviewGet());
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const refresh = () => { setReview(KBotAPI.reviewGet()); setNotice(readNotice()); };
+    window.addEventListener('kbot-review-changed', refresh);
+    return () => window.removeEventListener('kbot-review-changed', refresh);
+  }, []);
+  if (!notice && review.length === 0) return null;
+  const dismiss = () => { localStorage.removeItem('kbot_restore_notice'); setNotice(null); };
+  return (
+    <React.Fragment>
+      <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', margin: '0 0 12px', padding: '10px 14px',
+        background: '#FEF3C7', color: '#78350F', border: '1.5px solid #F59E0B', borderRadius: 'var(--radius-sm)', fontSize: 13 }}>
+        <span style={{ flex: '1 1 260px' }}>
+          {notice && <span>♻️ La base de datos se restauró desde un respaldo; los datos de este dispositivo se recargaron. </span>}
+          {review.length > 0 && <strong>{review.length === 1 ? '1 cambio de este dispositivo quedó sin enviar y espera revisión.' : `${review.length} cambios de este dispositivo quedaron sin enviar y esperan revisión.`}</strong>}
+        </span>
+        {review.length > 0 && <button className="btn-primary tiny" onClick={() => setOpen(true)}>REVISAR</button>}
+        {notice && <button className="btn-ghost" onClick={dismiss} aria-label="Cerrar aviso" style={{ padding: '4px 10px' }}>✕</button>}
+      </div>
+      {open && <ReviewQueueModal items={review} user={user} onClose={() => setOpen(false)} />}
+    </React.Fragment>
+  );
+}
+
+function ReviewQueueModal({ items, user, onClose }) {
+  const [busy, setBusy] = useState(false);
+  const canDiscard = user?.rol === 'admin' || user?.rol === 'gerente';
+  const resend = async (qids) => {
+    setBusy(true);
+    try {
+      KBotAPI.reviewResend(qids);
+      await KBotAPI.flushQueue();
+      if (window.kbotLightSync) await window.kbotLightSync();
+    } finally { setBusy(false); }
+  };
+  const discard = (qids) => {
+    if (!confirm(`¿Descartar ${qids.length} cambio${qids.length === 1 ? '' : 's'}? No se podrán recuperar.`)) return;
+    KBotAPI.reviewDiscard(qids);
+  };
+  const all = items.map(o => o.qid);
+  return (
+    <div className="modal-backdrop" onClick={() => { if (!busy) onClose(); }}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 640 }} role="dialog" aria-modal="true" aria-label="Cambios en revisión">
+        <header className="capture-head">
+          <h3 style={{ margin: 0 }}>CAMBIOS EN REVISIÓN</h3>
+          <button className="modal-close" onClick={onClose} disabled={busy} aria-label="Cerrar">×</button>
+        </header>
+        <div style={{ padding: 16, maxHeight: '60vh', overflow: 'auto' }}>
+          <p style={{ marginTop: 0, fontSize: 13 }}>
+            Estos cambios se hicieron en este dispositivo <strong>antes de que la base de datos se restaurara</strong> y no se enviaron.
+            Revisa cada uno: <strong>Reenviar</strong> lo aplica sobre los datos actuales{canDiscard ? '; Descartar lo borra' : ''}.
+          </p>
+          {items.length === 0 && <p>No hay cambios pendientes.</p>}
+          {items.map(op => (
+            <div key={op.qid} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 0', borderTop: '1px solid var(--line)' }}>
+              <div style={{ flex: 1, fontSize: 13 }}>
+                <div>{describeQueuedOp(op)}</div>
+                <div className="mono" style={{ fontSize: 11, opacity: 0.7 }}>capturado {new Date(op.ts || op.review_at).toLocaleString('es-MX')}</div>
+              </div>
+              <button className="btn-primary tiny" disabled={busy} onClick={() => resend([op.qid])}>Reenviar</button>
+              {canDiscard && <button className="btn-ghost" disabled={busy} onClick={() => discard([op.qid])} style={{ padding: '6px 10px' }}>Descartar</button>}
+            </div>
+          ))}
+        </div>
+        {items.length > 1 && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: 16, borderTop: '1px solid var(--line)' }}>
+            {canDiscard && <button className="btn-ghost" disabled={busy} onClick={() => discard(all)}>Descartar todo</button>}
+            <button className="btn-primary" disabled={busy} onClick={() => resend(all)}>{busy ? 'Enviando…' : 'Reenviar todo'}</button>
           </div>
         )}
       </div>

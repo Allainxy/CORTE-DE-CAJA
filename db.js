@@ -81,5 +81,19 @@ window.KBotDB = (function () {
     });
   }
 
-  return { open, getAll, put, del, bulkPut };
+  // Vacía el espejo local en UNA transacción (tras una restauración de la BD del servidor,
+  // api.js performReset). 'meta' no guarda datos del servidor y se deja.
+  async function clearAll() {
+    const db = await open();
+    const stores = ['movs', 'cats', 'groups', 'budgets', 'cajas'].filter(s => db.objectStoreNames.contains(s));
+    const t = db.transaction(stores, 'readwrite');
+    stores.forEach(s => t.objectStore(s).clear());
+    return new Promise((res, rej) => {
+      t.oncomplete = () => res();
+      t.onerror = () => rej(t.error);
+      t.onabort = () => rej(t.error);
+    });
+  }
+
+  return { open, getAll, put, del, bulkPut, clearAll };
 })();

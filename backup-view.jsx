@@ -225,7 +225,10 @@ const apiFetchBk = async (path, opts = {}) => {
   const r = await fetch(path, { ...opts, headers });
   if (!r.ok) {
     const j = await r.json().catch(() => ({}));
-    throw new Error(j.error || 'Error ' + r.status);
+    const err = new Error(j.error || 'Error ' + r.status);
+    err.status = r.status;
+    err.body = j; // p.ej. missing (tablas/columnas faltantes) al analizar un respaldo
+    throw err;
   }
   return r.json();
 };
@@ -551,63 +554,109 @@ function BackupTablasSection() {
   );
 }
 
-// === SECCIÓN 4: Restaurar con triple confirmación ===
+// === SECCIÓN 4: Restaurar (analizar → confirmar) ===
+// El servidor prepara y valida el archivo sin tocar la BD (/inspect) y muestra qué trae;
+// después se aplica con RESTAURAR + contraseña. Ver backend/lib/restore.js.
+const RESTORE_MAX_MB = 18; // nginx corta en 25 MB y el archivo viaja en base64 (+33%)
+const RESTORE_RESULTADOS = {
+  RESTORE_FULL_APPLIED: { ok: true, texto: 'Restauración aplicada correctamente.' },
+  RESTORE_FULL_ROLLED_BACK: { ok: false, texto: 'El servidor no pudo arrancar con la base restaurada y volvió automáticamente a la anterior. No se perdió nada.' },
+  RESTORE_FULL_ABORTED: { ok: false, texto: 'La restauración no llegó a aplicarse; sigue la base anterior.' },
+  RESTORE_FULL_NOT_APPLIED: { ok: false, texto: 'La restauración no quedó aplicada; sigue la base anterior.' },
+  RESTORE_FULL_ROLLBACK_FAILED: { ok: false, texto: 'FALLÓ la vuelta automática al respaldo de seguridad. Contacta al administrador del servidor.' },
+  RESTORE_FULL_STALE_MARKER: { ok: false, texto: 'Quedó una restauración a medias sin resolver. Contacta al administrador del servidor.' },
+};
+
 function RestaurarSection() {
-  const [archivo, setArchivo] = useState(null);
-  const [archivoBase64, setArchivoBase64] = useState(null);
   const [archivoInfo, setArchivoInfo] = useState(null);
+  const [archivoBase64, setArchivoBase64] = useState(null);
+  const [analizando, setAnalizando] = useState(false);
+  const [preview, setPreview] = useState(null);     // respuesta de /restore-full/inspect
+  const [faltantes, setFaltantes] = useState(null); // tablas/columnas que le faltan al respaldo
   const [showModal, setShowModal] = useState(false);
   const [error, setError] = useState('');
-  const fileInputRef = useRef(null);
+  const [status, setStatus] = useState(null);
+  const seleccion = useRef(0); // descarta lecturas de un archivo elegido antes
+
+  useEffect(() => { apiFetchBk('/api/backup/restore-status').then(setStatus).catch(() => {}); }, []);
 
   const handleFile = (e) => {
     const f = e.target.files?.[0];
+    const sel = ++seleccion.current;
+    setError(''); setPreview(null); setFaltantes(null); setArchivoInfo(null); setArchivoBase64(null);
     if (!f) return;
-    setError('');
-    if (!f.name.endsWith('.db')) {
-      setError('Solo se aceptan archivos .db');
-      return;
-    }
-    if (f.size > 100 * 1024 * 1024) {
-      setError('Archivo demasiado grande (máximo 100 MB)');
-      return;
-    }
-    if (f.size < 1000) {
-      setError('Archivo demasiado pequeño, ¿es un .db válido?');
-      return;
-    }
-    setArchivo(f);
+    if (!f.name.toLowerCase().endsWith('.db')) { setError('Solo se aceptan archivos .db'); return; }
+    if (f.size > RESTORE_MAX_MB * 1024 * 1024) { setError(`Archivo demasiado grande (máximo ${RESTORE_MAX_MB} MB)`); return; }
+    if (f.size < 1024) { setError('Archivo demasiado pequeño, ¿es un .db válido?'); return; }
     setArchivoInfo({ name: f.name, size: f.size, lastModified: f.lastModified });
     const reader = new FileReader();
-    reader.onload = () => {
-      const base64 = reader.result.split(',')[1];
-      setArchivoBase64(base64);
-    };
-    reader.onerror = () => setError('Error al leer archivo');
+    reader.onload = () => { if (sel === seleccion.current) setArchivoBase64(String(reader.result).split(',')[1]); };
+    reader.onerror = () => { if (sel === seleccion.current) setError('Error al leer archivo'); };
     reader.readAsDataURL(f);
   };
 
+  const analizar = async () => {
+    if (analizando || !archivoBase64) return;
+    setAnalizando(true); setError(''); setFaltantes(null); setPreview(null);
+    try {
+      const r = await apiFetchBk('/api/backup/restore-full/inspect', { method: 'POST', body: JSON.stringify({ db_base64: archivoBase64 }) });
+      setPreview(r);
+    } catch (e) {
+      setError(e.message);
+      if (e.body && e.body.missing) setFaltantes(e.body.missing);
+    } finally { setAnalizando(false); }
+  };
+
+  const last = status && status.last;
+  const res = last && (RESTORE_RESULTADOS[last.accion] || { ok: false, texto: last.accion });
+  const fecha = (s) => (s ? String(s) : '—');
+  const filas = preview ? [
+    ['Movimientos', preview.respaldo.movs, preview.actual.movs],
+    ['Último movimiento', fecha(preview.respaldo.ultimo_mov), fecha(preview.actual.ultimo_mov)],
+    ['Última modificación', preview.respaldo.ultima_modificacion ? fmtDateTime(preview.respaldo.ultima_modificacion) : '—',
+      preview.actual.ultima_modificacion ? fmtDateTime(preview.actual.ultima_modificacion) : '—'],
+    ['Cajas', preview.respaldo.cajas ?? '—', preview.actual.cajas ?? '—'],
+  ] : [];
+
   return (
     <div>
+      {status && status.inProgress && (
+        <div className="bk-error">⏳ Hay una restauración en curso o pendiente de terminar. Espera a que el servidor reinicie y recarga esta página.</div>
+      )}
+      {res && (
+        <div className={res.ok ? 'bk-success' : 'bk-error'}>
+          {res.ok ? '✅' : '⚠'} <strong>Última restauración</strong> ({last.finishedAt ? fmtDateTime(last.finishedAt) : '—'}
+          {last.by && last.by.nombre ? ' · ' + last.by.nombre : ''}): {res.texto}
+          {last.safety && <span> Respaldo de seguridad: <code>{last.safety}</code> (en “Respaldos automáticos”).</span>}
+        </div>
+      )}
       {error && <div className="bk-error">⚠ {error}</div>}
+      {faltantes && (
+        <div className="bk-error" style={{ fontSize: 12 }}>
+          {faltantes.tablas && faltantes.tablas.length > 0 && <div>Tablas que faltan: <code>{faltantes.tablas.join(', ')}</code></div>}
+          {faltantes.columnas && faltantes.columnas.length > 0 && <div>Columnas que faltan: {faltantes.columnas.map(c => `${c.table} (${c.columns.join(', ')})`).join(' · ')}</div>}
+          {faltantes.llaves && faltantes.llaves.length > 0 && <div>Llaves que faltan: {faltantes.llaves.map(k => `${k.table} (${k.keys.join(', ')})`).join(' · ')}</div>}
+        </div>
+      )}
 
       <div className="bk-card">
         <div className="bk-card-title">♻️ Restaurar base de datos completa</div>
 
         <div className="bk-danger-box">
-          <strong>⚠️ ACCIÓN PELIGROSA E IRREVERSIBLE</strong><br />
-          Restaurar la BD reemplazará TODOS los datos actuales (movimientos, viáticos, vendedores, cortes, configuraciones, todo) por los del archivo que subas.
-          El servidor se reiniciará automáticamente. Cualquier movimiento capturado después del backup que estás restaurando se perderá.
+          <strong>⚠️ ACCIÓN PELIGROSA</strong><br />
+          Restaurar reemplaza los datos actuales (movimientos, cajas, ventas, nómina, viáticos, configuración…) por los del archivo.
+          Todo lo capturado después de ese respaldo se perderá. <strong>Se conservan los usuarios, sus contraseñas y permisos, y la bitácora actuales.</strong>
           <br /><br />
-          <strong>Antes de continuar:</strong>
-          <br />1. Descarga primero un backup del estado actual (pestaña "Backup completo")
-          <br />2. Avisa a todos los usuarios que el sistema se reiniciará
-          <br />3. Confirma que el archivo .db que vas a subir es el correcto
+          Antes de reemplazar, el sistema guarda automáticamente un <strong>respaldo de seguridad</strong> del estado actual
+          (aparece en “Respaldos automáticos” como <code>PRE-RESTORE</code>) y el servidor se reinicia. Todos los dispositivos recargan
+          sus datos; los cambios que tuvieran sin enviar quedan en revisión.
+          <br /><br />
+          <strong>Antes de continuar:</strong> avisa a todos los usuarios y confirma que el archivo es el correcto.
         </div>
 
         <div style={{ marginBottom: 14 }}>
-          <label className="bk-label">Selecciona archivo .db del backup</label>
-          <input ref={fileInputRef} type="file" accept=".db" onChange={handleFile}
+          <label className="bk-label" htmlFor="bk-restore-file">Selecciona archivo .db del respaldo (máximo {RESTORE_MAX_MB} MB)</label>
+          <input id="bk-restore-file" type="file" accept=".db" onChange={handleFile} disabled={analizando}
             style={{ display: 'block', padding: 8, border: '2px dashed var(--line)', borderRadius: 'var(--radius-sm)', width: '100%', cursor: 'pointer' }} />
         </div>
 
@@ -617,57 +666,86 @@ function RestaurarSection() {
           </div>
         )}
 
-        <button
-          className="bk-btn bk-btn-danger bk-btn-lg"
-          disabled={!archivo || !archivoBase64}
-          onClick={() => setShowModal(true)}
-        >
-          🔥 Iniciar proceso de restauración
-        </button>
+        {!preview && (
+          <button className="bk-btn bk-btn-warn bk-btn-lg" disabled={!archivoBase64 || analizando} onClick={analizar}>
+            {analizando ? '🔍 Analizando… (puede tardar hasta 30 s)' : '🔍 Analizar respaldo'}
+          </button>
+        )}
+
+        {preview && (
+          <React.Fragment>
+            <div style={{ overflowX: 'auto', marginBottom: 14 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: 'left', padding: 6 }}></th>
+                    <th style={{ textAlign: 'right', padding: 6 }}>Respaldo (quedará)</th>
+                    <th style={{ textAlign: 'right', padding: 6 }}>Actual (se reemplaza)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filas.map(([k, a, b]) => (
+                    <tr key={k} style={{ borderTop: '1px solid var(--line)' }}>
+                      <td style={{ padding: 6 }}>{k}</td>
+                      <td style={{ padding: 6, textAlign: 'right', fontFamily: 'var(--f-mono)' }}>{a}</td>
+                      <td style={{ padding: 6, textAlign: 'right', fontFamily: 'var(--f-mono)' }}>{b}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p style={{ fontSize: 12, color: 'var(--ink-soft)', marginTop: 0 }}>
+              ✓ El archivo pasó las verificaciones (integridad, estructura y una prueba de arranque del servidor).
+              El análisis vale 15 minutos.
+            </p>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button className="bk-btn bk-btn-danger bk-btn-lg" onClick={() => setShowModal(true)}>🔥 Continuar con la restauración</button>
+              <button className="bk-btn bk-btn-ghost" onClick={() => setPreview(null)}>Cancelar</button>
+            </div>
+          </React.Fragment>
+        )}
       </div>
 
-      {showModal && (
-        <RestaurarModal
-          archivoInfo={archivoInfo}
-          archivoBase64={archivoBase64}
-          onClose={() => setShowModal(false)}
-        />
+      {showModal && preview && (
+        <RestaurarModal archivoInfo={archivoInfo} preview={preview} onClose={() => setShowModal(false)} />
       )}
     </div>
   );
 }
 
-// === MODAL DE TRIPLE CONFIRMACIÓN ===
-function RestaurarModal({ archivoInfo, archivoBase64, onClose }) {
+// === MODAL DE CONFIRMACIÓN (resumen → palabra RESTAURAR → contraseña) ===
+function RestaurarModal({ archivoInfo, preview, onClose }) {
   const [step, setStep] = useState(1);
   const [tokenInput, setTokenInput] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [restoring, setRestoring] = useState(false);
-  const [done, setDone] = useState(false);
+  const [done, setDone] = useState(null);
 
   const next = () => { setError(''); setStep(s => s + 1); };
 
   const ejecutar = async () => {
+    if (restoring || done) return; // evita doble envío (doble clic o Enter)
     setError(''); setRestoring(true);
     try {
       const r = await apiFetchBk('/api/backup/restore-full', {
         method: 'POST',
-        body: JSON.stringify({
-          confirmation_token: 'RESTAURAR',
-          password,
-          db_base64: archivoBase64
-        })
+        body: JSON.stringify({ staging_id: preview.staging_id, confirmation_token: 'RESTAURAR', password })
       });
-      setDone(true);
-      // Después de 4 segundos, recargar la página (server se reinició)
-      setTimeout(() => { window.location.reload(); }, 4000);
-    } catch (e) { setError(e.message); setRestoring(false); }
+      setDone(r);
+      // El servidor se reinicia; al recargar, cada dispositivo reconstruye sus datos
+      setTimeout(() => { window.location.reload(); }, 6000);
+    } catch (e) {
+      setError(e.message);
+      setRestoring(false);
+      // Error con la BD ya cerrada: el servidor se reinicia solo; recargar para ver el estado real
+      if (/reinicia/.test(e.message)) setTimeout(() => { window.location.reload(); }, 8000);
+    }
   };
 
   return (
-    <div className="bk-modal-bg" onClick={(e) => { if (!restoring && !done) onClose(); }}>
-      <div className="bk-modal" onClick={e => e.stopPropagation()}>
+    <div className="bk-modal-bg" onClick={() => { if (!restoring && !done) onClose(); }}>
+      <div className="bk-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Restauración de base de datos">
         <div className="bk-modal-head">
           <h2>🔥 Restauración de BD</h2>
           <div className="step">Paso {step} de 3 · Confirmación obligatoria</div>
@@ -680,7 +758,12 @@ function RestaurarModal({ archivoInfo, archivoBase64, onClose }) {
           </div>
 
           {error && <div className="bk-error">⚠ {error}</div>}
-          {done && <div className="bk-success">✅ Restauración aplicada. Reiniciando servidor… La página se recargará en breve.</div>}
+          {done && (
+            <div className="bk-success">
+              ✅ Restauración aplicada. Respaldo de seguridad: <code>{done.safety_backup}</code>.<br />
+              El servidor se está reiniciando; la página se recargará en unos segundos.
+            </div>
+          )}
 
           {step === 1 && !done && (
             <React.Fragment>
@@ -688,14 +771,13 @@ function RestaurarModal({ archivoInfo, archivoBase64, onClose }) {
                 ¿Estás absolutamente seguro?
               </h3>
               <div className="bk-danger-box">
-                Estás a punto de restaurar la base de datos con el archivo:<br /><br />
+                Vas a reemplazar la base de datos con:<br /><br />
                 📁 <strong style={{ fontFamily: 'var(--f-mono)' }}>{archivoInfo?.name}</strong><br />
-                📏 <strong>{fmtBytes(archivoInfo?.size)}</strong><br /><br />
-                Esto BORRARÁ todos los datos actuales y los reemplazará por los del archivo.<br />
-                <strong>Esta acción no se puede deshacer.</strong>
+                📊 {preview.respaldo.movs} movimientos (hoy hay {preview.actual.movs}) · último del respaldo: {preview.respaldo.ultimo_mov || '—'}<br /><br />
+                Lo capturado después de ese respaldo se perderá. Se conservan usuarios, contraseñas, permisos y bitácora.
               </div>
               <p style={{ fontSize: 12, color: 'var(--ink-soft)' }}>
-                Se hará automáticamente un backup de seguridad del estado actual antes de restaurar, por si necesitas revertir.
+                Antes de reemplazar se guarda automáticamente un respaldo de seguridad del estado actual, por si necesitas revertir.
               </p>
             </React.Fragment>
           )}
@@ -708,7 +790,7 @@ function RestaurarModal({ archivoInfo, archivoBase64, onClose }) {
               <p style={{ fontSize: 13 }}>
                 Para continuar, escribe la palabra <code style={{ background: '#FEE2E2', padding: '3px 8px', borderRadius: 3, color: '#991B1B', fontWeight: 800, fontSize: 14 }}>RESTAURAR</code> en el campo de abajo (exactamente, en mayúsculas):
               </p>
-              <input className="bk-input" autoFocus value={tokenInput}
+              <input className="bk-input" autoFocus value={tokenInput} aria-label="Escribe RESTAURAR"
                 onChange={e => setTokenInput(e.target.value)}
                 placeholder="Escribe RESTAURAR"
                 style={{ fontFamily: 'var(--f-mono)', textAlign: 'center', fontSize: 18, letterSpacing: 2, marginTop: 6 }} />
@@ -728,19 +810,19 @@ function RestaurarModal({ archivoInfo, archivoBase64, onClose }) {
               <p style={{ fontSize: 13 }}>
                 Ingresa tu contraseña de administrador para confirmar la restauración. Esta es la <strong>última oportunidad</strong> de cancelar.
               </p>
-              <label className="bk-label">Contraseña administrador</label>
-              <input className="bk-input" type="password" autoFocus value={password}
+              <label className="bk-label" htmlFor="bk-restore-pass">Contraseña administrador</label>
+              <input id="bk-restore-pass" className="bk-input" type="password" autoFocus value={password}
                 onChange={e => setPassword(e.target.value)}
                 placeholder="••••••••"
-                onKeyDown={e => { if (e.key === 'Enter' && password) ejecutar(); }} />
+                onKeyDown={e => { if (e.key === 'Enter' && password && !restoring) ejecutar(); }} />
               <div style={{ marginTop: 14, padding: 10, background: '#FEE2E2', borderRadius: 'var(--radius-sm)', fontSize: 12, color: '#991B1B', border: '1.5px solid #FCA5A5' }}>
-                ⚠️ Al hacer click en <strong>"EJECUTAR RESTAURACIÓN"</strong>, el servidor reemplazará la BD y se reiniciará automáticamente. Toma 5-10 segundos.
+                ⚠️ Al hacer click en <strong>"EJECUTAR RESTAURACIÓN"</strong>, el servidor reemplazará la BD y se reiniciará automáticamente. Toma unos segundos.
               </div>
             </React.Fragment>
           )}
         </div>
         <div className="bk-modal-foot">
-          <button className="bk-btn bk-btn-ghost" onClick={onClose} disabled={restoring || done}>
+          <button className="bk-btn bk-btn-ghost" onClick={onClose} disabled={restoring || !!done}>
             Cancelar
           </button>
           {!done && (

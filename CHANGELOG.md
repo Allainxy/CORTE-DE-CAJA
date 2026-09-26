@@ -11,6 +11,43 @@ El proyecto sigue [versionado semántico](https://semver.org/lang/es/) — `MAYO
 
 ---
 
+## [1.18.0] — 2026-09-26
+
+### 📌 Resumen ejecutivo
+
+**Restaurar la base de datos completa desde la app vuelve a estar disponible, ahora de forma segura.** Detalle del diseño y la operación en `docs/RESTAURAR-BD.md`.
+
+**Lo más importante para el usuario:**
+- **Restaurar en dos pasos.** Primero se *analiza* el respaldo: el sistema lo revisa sin tocar nada y muestra qué trae frente a lo actual (movimientos, último movimiento, cajas). Después se confirma con RESTAURAR + contraseña.
+- **No se pierde nada por accidente.** Antes de reemplazar se guarda solo un respaldo de seguridad (aparece en "Respaldos automáticos" como `PRE-RESTORE`). Si el servidor no pudiera arrancar con la base restaurada, vuelve solo a la anterior.
+- **Se conservan usuarios, contraseñas, permisos y bitácora actuales**: restaurar un respaldo viejo no revive accesos dados de baja ni deja fuera al administrador.
+- **Todos los dispositivos se ponen al día solos.** Después de una restauración, cada dispositivo recarga sus datos. Lo que tuviera capturado sin enviar queda en una lista **"Cambios en revisión"** (aviso amarillo) para reenviarlo o descartarlo, en vez de revivir datos viejos en silencio.
+- **Crear usuarios desde la app ya funciona** (fallaba siempre con un error de base de datos).
+
+### 🐛 Fixed
+
+- `POST /api/users`: no llenaba `created_at` (NOT NULL sin default en el esquema real) → toda alta de usuario fallaba con 500.
+- Migración de `movs.created_at` anidada por error dentro de la de `cxp_id`: una BD que ya tenía `cxp_id` nunca recibía `created_at`.
+- `api.js` `flushQueue`: al terminar reescribía/borraba la cola completa, perdiendo capturas encoladas durante el envío. Ahora solo quita lo procesado (cada operación lleva un id).
+- `auth()`: rol y nombre salen de la BD en cada petición, no del token de 30 días (un cambio de rol aplica de inmediato).
+
+### 🔒 Security / datos
+
+- Restauración (`backend/lib/restore.js`): el archivo se valida (integridad; solo tablas e índices planos; sin triggers, vistas, tablas virtuales, columnas generadas, índices parciales/de expresión ni FK/CHECK/UNIQUE que la BD actual no tenga), se prueba arrancando el servidor sobre una copia, y debe traer todas las tablas, columnas y llaves de la BD actual. La BD viva solo cambia por un `rename` atómico; nada escribe en ella después.
+- Epoch de datos (`app_settings.db_epoch`, claves reservadas): las escrituras hechas con una copia de antes de la restauración se rechazan (409, o 503 para la versión anterior de la app, que así las reintenta en vez de descartarlas).
+- `POST /api/backup/restore-table/:name` deshabilitado.
+
+### 🔧 Técnico
+
+- Nuevo: `backend/lib/restore.js`, `backend/scripts/restore-db.js` (restauración por SSH con el servidor detenido; `--allow-schema-diff` para rollbacks de deploy), `docs/RESTAURAR-BD.md`.
+- `server.js`: `bootGuard` antes de abrir la BD y `finishBoot` en `listen`; `KBOT_MIGRATE_ONLY`; `GET /api/epoch`; rutas `restore-full/inspect`, `restore-full`, `restore-status`; `BACKUP_DIR` configurable.
+- Cliente: `api.js` (envoltorio de `fetch` con `X-DB-Epoch`, epoch por pestaña, cola con id/epoch, lista de revisión, reconstrucción idempotente), `db.js` (`clearAll`), `app.jsx` (aviso y modal de revisión), `backup-view.jsx` (analizar → confirmar, resultado de la última restauración). Sin categorías de ejemplo cuando hay servidor.
+- `deploy.sh`: `--sync-only`; el rollback impreso revierte también el frontend y restaura la BD con `restore-db.js`.
+- Versión de recursos `2026-09-26a` y caché del service worker (las pestañas abiertas se recargan solas).
+- Diseño criticado desde 4 ángulos (33 hallazgos incorporados) e implementación revisada desde 5 (29 corregidos). Tests: **66/66** (incluye restauración de punta a punta con el servidor real).
+
+---
+
 ## [1.17.0] — 2026-09-26
 
 ### 📌 Resumen ejecutivo

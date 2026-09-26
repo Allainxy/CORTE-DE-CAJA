@@ -13,6 +13,16 @@ const PORT = process.env.PORT || 3001;
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) { console.error('FATAL: JWT_SECRET no está definida. Configúrala en el entorno (ecosystem.config.js).'); process.exit(1); }
 const DB_FILE = process.env.DB_FILE || path.join(__dirname, 'kbotanas.db');
+const nodeCrypto = require('crypto');
+const restoreLib = require('./lib/restore');
+
+// Si hubo una restauración de la BD completa, se decide ANTES de abrirla: seguir con
+// la restaurada o, si el arranque anterior con ella falló, volver al respaldo de seguridad.
+const restoreBoot = restoreLib.bootGuard({ dbFile: DB_FILE });
+// Arrancando con la BD restaurada: un stop/reload de pm2 en esta ventana no es un fallo
+// (no debe revertir); se retiran al terminar el arranque (finishBoot en app.listen).
+const onBootSignal = () => { restoreLib.markerBackToPending(DB_FILE); process.exit(0); };
+if (restoreBoot.action === 'booting') { process.once('SIGINT', onBootSignal); process.once('SIGTERM', onBootSignal); }
 
 const db = new Database(DB_FILE);
 db.pragma('journal_mode = WAL');
@@ -33,6 +43,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS app_settings (
   updated_at INTEGER NOT NULL,
   updated_by TEXT
 )`);
+// 0b) Epoch de datos: identifica la "generación" de la BD. Cada restauración
+//     completa trae uno nuevo (y db_epoch_at); los clientes lo comparan para
+//     reconstruir su copia local y no reenviar cambios de antes de restaurar.
+db.prepare(`INSERT OR IGNORE INTO app_settings (key, value, updated_at, updated_by) VALUES ('db_epoch', ?, ?, 'system')`)
+  .run(nodeCrypto.randomUUID(), Date.now());
 
 // 1) Tabla groups (jerarquía contable)
 db.exec(`CREATE TABLE IF NOT EXISTS groups (
@@ -276,16 +291,16 @@ const movsColsCxP = db.prepare("PRAGMA table_info(movs)").all().map(c => c.name)
 if (!movsColsCxP.includes('cxp_id')) {
   db.exec(`ALTER TABLE movs ADD COLUMN cxp_id TEXT`);
   console.log('🔧 Migración: columna cxp_id agregada a movs');
+}
 
 // ─── Migración: created_at en movs (fix bug pago orden compra) ───
+// Independiente de la de cxp_id: anidada dentro de ella, una BD que ya tenía cxp_id nunca la recibía.
 const movsColsCreated = db.prepare("PRAGMA table_info(movs)").all().map(c => c.name);
 if (!movsColsCreated.includes('created_at')) {
   db.exec(`ALTER TABLE movs ADD COLUMN created_at INTEGER`);
   db.exec(`UPDATE movs SET created_at = updated_at WHERE created_at IS NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_movs_created ON movs(created_at)`);
   console.log('🔧 Migración: columna created_at agregada a movs');
-}
-
 }
 if (!movsColsCxP.includes('abono_id')) {
   db.exec(`ALTER TABLE movs ADD COLUMN abono_id TEXT`);
@@ -473,10 +488,40 @@ try {
   process.exit(1);
 }
 
+// Epoch vigente: no cambia durante la vida del proceso (una restauración reinicia el servidor)
+const DB_EPOCH = restoreLib.readEpoch(db);
+
 const app = express();
 app.use(cors({ origin: process.env.CORS_ORIGIN || 'https://corte.kbomx.com' }));
 app.use(express.json({ limit: '50mb' }));
 app.use((req, _res, next) => { console.log(new Date().toISOString(), req.method, req.url); next(); });
+
+// Mientras se aplica una restauración (desde el respaldo de seguridad hasta el reinicio)
+// la API no atiende nada más: la conexión a la BD se va a cerrar.
+let restoreApplying = false;
+app.use((req, res, next) => {
+  if (restoreApplying) return res.status(503).json({ error: 'Restauración de la base de datos en curso. Intenta en unos segundos.', code: 'RESTORE_IN_PROGRESS' });
+  next();
+});
+
+// Escrituras con un epoch distinto al vigente vienen de un dispositivo cuya copia local es
+// de antes de una restauración: se rechazan para que no revivan datos. Sin header se aceptan
+// mientras nunca haya habido una restauración (clientes viejos durante el despliegue); después,
+// se responde 503 y no 409: el api.js anterior trata los 4xx como permanentes (los descarta a
+// una lista que nadie ve) y los 5xx como transitorios (los conserva hasta cargar el código nuevo,
+// que los pasa a revisión).
+const EPOCH_MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+app.use('/api', (req, res, next) => {
+  if (!EPOCH_MUTATING.has(req.method)) return next();
+  const p = req.path.toLowerCase(); // Express enruta sin distinguir mayúsculas
+  if (p === '/login' || p.startsWith('/backup/')) return next();
+  const sent = req.get('X-DB-Epoch');
+  if (sent ? sent === DB_EPOCH.epoch : !DB_EPOCH.at) return next();
+  res.status(sent ? 409 : 503).json({
+    error: 'La base de datos fue restaurada desde un respaldo. La app se recargará para traer los datos correctos.',
+    code: 'DB_EPOCH_STALE', epoch: DB_EPOCH.epoch,
+  });
+});
 
 // ---------- Auth middleware ----------
 function auth(req, res, next) {
@@ -485,9 +530,12 @@ function auth(req, res, next) {
   if (!token) return res.status(401).json({ error: 'Token requerido' });
   try {
     req.user = jwt.verify(token, JWT_SECRET);
-    // Verificar que sigue activo en cada request crítico
-    const u = db.prepare('SELECT activo FROM users WHERE id = ?').get(req.user.id);
+    // Verificar que sigue activo en cada request crítico. Rol y nombre salen de la BD,
+    // no del token (30 días): un cambio de rol aplica de inmediato.
+    const u = db.prepare('SELECT activo, rol, nombre FROM users WHERE id = ?').get(req.user.id);
     if (!u || u.activo === 0) return res.status(401).json({ error: 'Usuario desactivado' });
+    req.user.rol = u.rol;
+    req.user.nombre = u.nombre;
     next();
   } catch {
     res.status(401).json({ error: 'Token inválido' });
@@ -498,6 +546,12 @@ function requireAdmin(req, res, next) {
   if (req.user?.rol !== 'admin') return res.status(403).json({ error: 'Solo admin' });
   next();
 }
+
+// Epoch de datos para los clientes (api.js lo consulta antes de enviar su cola offline).
+// epoch_at solo existe si la BD viene de una restauración.
+app.get('/api/epoch', auth, (_req, res) => {
+  res.json({ epoch: DB_EPOCH.epoch, epoch_at: DB_EPOCH.at });
+});
 
 // requireRole(['admin','gerente']) — flexible
 function requireRole(roles) {
@@ -920,8 +974,10 @@ app.post('/api/users', auth, requireAdmin, (req, res) => {
 
   const id = newId('u-');
   const pwHash = bcrypt.hashSync(password, 10);
-  db.prepare(`INSERT INTO users (id, username, password, nombre, rol, activo, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`).run(id, username.trim(), pwHash, nombre.trim(), rol, activo === false ? 0 : 1, Date.now());
+  // created_at es NOT NULL sin default en el esquema real (init-db.js): omitirla hacía fallar el alta
+  const nowUser = Date.now();
+  db.prepare(`INSERT INTO users (id, username, password, nombre, rol, activo, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(id, username.trim(), pwHash, nombre.trim(), rol, activo === false ? 0 : 1, nowUser, nowUser);
 
   // Asignar cajas (si se proporcionan)
   if (Array.isArray(cajas) && cajas.length > 0) {
@@ -2023,12 +2079,14 @@ require('./routes/viaticos')(app, db, { requireAuth: auth, requirePin, requireAd
 const __backupFs = require('fs');
 const __backupPath = require('path');
 const __backupCp = require('child_process');
-const __dbPath = '/opt/corte-kbomx/data/kbotanas.db';
-const __backupDir = '/opt/corte-kbomx/backups';
-const __backupAutoDir = '/opt/corte-kbomx/backups/auto';
+const __dbPath = DB_FILE;
+const __backupDir = process.env.BACKUP_DIR || '/opt/corte-kbomx/backups';
+const __backupAutoDir = __backupPath.join(__backupDir, 'auto');
 
-// Asegurar directorios
-try { __backupFs.mkdirSync(__backupAutoDir, { recursive: true }); } catch (e) {}
+// Asegurar directorios (no en el arranque en seco de una restauración)
+if (process.env.KBOT_MIGRATE_ONLY !== '1') {
+  try { __backupFs.mkdirSync(__backupAutoDir, { recursive: true }); } catch (e) {}
+}
 
 // Helper: middleware requiere admin
 function __requireAdminBackup(req, res, next) {
@@ -2179,131 +2237,147 @@ app.post('/api/backup/auto-run', auth, __requireAdminBackup, async (req, res) =>
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// POST /api/backup/restore-full — restaurar BD completa desde archivo subido
-// Requiere: confirmation_token === "RESTAURAR" + password admin verificada
-// Body: { confirmation_token, password, db_base64 }
-app.post('/api/backup/restore-full', auth, __requireAdminBackup, (req, res) => {
-  // DESHABILITADA: el flujo de abajo sobrescribe el .db con la BD abierta en modo WAL.
-  // El -wal viejo queda junto al archivo nuevo y SQLite lo reaplica encima → corrupción;
-  // además el respaldo de seguridad (copyFileSync) puede omitir lo que vive en el WAL.
-  // Antes de reactivarla: db.backup() para el respaldo, integrity_check del archivo
-  // subido, db.close(), borrar -wal/-shm, copiar y reiniciar. Ver docs/AUDITORIA-2026-06.md.
-  return res.status(503).json({ error: 'La restauración completa está deshabilitada por seguridad. Solicítala al administrador del servidor.' });
-  // eslint-disable-next-line no-unreachable
+// POST /api/backup/restore-full — ver lib/restore.js y docs/RESTAURAR-BD.md.
+// Flujo en dos pasos: /inspect prepara y valida el archivo SIN tocar la BD y
+// devuelve una vista previa; /restore-full lo aplica con RESTAURAR + contraseña.
+// Se conservan de la BD actual: usuarios, sus cajas y la bitácora (audit_log).
+const RESTORE_PATHS = restoreLib.paths(DB_FILE);
+const RESTORE_STAGED_TTL_MS = 15 * 60 * 1000;
+let restoreBusy = null;   // dueño de la inspección/aplicación en curso (una a la vez)
+let restoreStaged = null; // { stagingId, restoreId, stagedPath, epoch, stats, userId, expiresAt }
+
+function __dropRestoreStaged() {
+  if (restoreStaged) restoreLib.removeWithSidecars(restoreStaged.stagedPath);
+  restoreStaged = null;
+}
+function __takeRestoreLock(res) {
+  if (restoreBusy || restoreApplying) {
+    res.status(409).json({ error: 'Ya hay una restauración en curso.' });
+    return null;
+  }
+  if (__backupFs.existsSync(RESTORE_PATHS.markerPath)) {
+    res.status(409).json({ error: 'Hay una restauración pendiente de terminar; espera a que el servidor reinicie.' });
+    return null;
+  }
+  restoreBusy = Symbol('restore');
+  return restoreBusy;
+}
+function __releaseRestoreLock(token) { if (restoreBusy === token) restoreBusy = null; }
+function __restoreError(res, e) {
+  if (e instanceof restoreLib.RestoreError) {
+    const body = { error: e.message };
+    if (e.missing) body.missing = e.missing;
+    if (e.dryRunOutput) body.detalle = e.dryRunOutput;
+    return res.status(e.status || 400).json(body);
+  }
+  console.error('[restore] error:', e);
+  return res.status(500).json({ error: 'Error interno en la restauración: ' + e.message });
+}
+
+// POST /api/backup/restore-full/inspect — Body: { db_base64 }
+app.post('/api/backup/restore-full/inspect', auth, __requireAdminBackup, async (req, res) => {
+  const lock = __takeRestoreLock(res);
+  if (!lock) return;
+  let staged = null;
   try {
-    const { confirmation_token, password, db_base64 } = req.body || {};
-    if (confirmation_token !== 'RESTAURAR') {
-      return res.status(400).json({ error: 'Token de confirmación inválido. Debes escribir RESTAURAR exactamente.' });
-    }
-    if (!password) return res.status(400).json({ error: 'Contraseña requerida' });
-    if (!db_base64) return res.status(400).json({ error: 'Archivo de backup requerido' });
-
-    // Verificar password del admin
-    const userRow = db.prepare('SELECT * FROM users WHERE id = ? AND activo = 1').get(req.user.id);
-    if (!userRow) return res.status(403).json({ error: 'Usuario no existe' });
-    const bcrypt = require('bcryptjs');
-    const ok = bcrypt.compareSync(password, userRow.password || '');
-    if (!ok) {
-      audit(req, 'RESTORE_PASSWORD_FAIL', 'backup', '', 'Intento de restauración con password incorrecta');
-      return res.status(403).json({ error: 'Contraseña incorrecta' });
-    }
-
-    // Decodificar archivo
-    const buffer = Buffer.from(db_base64, 'base64');
-    if (buffer.length < 1000) return res.status(400).json({ error: 'Archivo demasiado pequeño, ¿es un .db válido?' });
-    if (buffer.length > 100 * 1024 * 1024) return res.status(400).json({ error: 'Archivo > 100 MB, demasiado grande' });
-
-    // Verificar magic bytes SQLite ("SQLite format 3\0")
-    const magic = buffer.slice(0, 16).toString();
-    if (!magic.startsWith('SQLite format 3')) {
-      return res.status(400).json({ error: 'No es un archivo SQLite válido (magic bytes incorrectos)' });
-    }
-
-    // Guardar a archivo temporal y validar abriéndolo
-    const tmpFile = '/tmp/kbotanas-restore-' + Date.now() + '.db';
-    __backupFs.writeFileSync(tmpFile, buffer);
-
-    // Hacer backup del actual ANTES de restaurar
-    const tsBackup = new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
-    const safetyBackup = __backupPath.join(__backupDir, `kbotanas-PRE-RESTORE-${tsBackup}.db`);
-    __backupFs.copyFileSync(__dbPath, safetyBackup);
-
-    audit(req, 'RESTORE_FULL_INIT', 'backup',
-      'safety: ' + __backupPath.basename(safetyBackup),
-      `Tamaño nuevo: ${(buffer.length/1024).toFixed(1)} KB · admin: ${req.user.nombre}`);
-
-    // Reemplazar BD (debe hacerse antes de que el proceso muera)
-    // Como el server tiene la BD abierta, lo más limpio es: copiar el nuevo encima, luego salir
-    __backupFs.copyFileSync(tmpFile, __dbPath);
-    try { __backupFs.unlinkSync(tmpFile); } catch (e) {}
-
-    // Responder ANTES de matarse
-    res.json({
-      ok: true,
-      safety_backup: __backupPath.basename(safetyBackup),
-      message: 'Restauración aplicada. El servidor se reiniciará automáticamente en 2 segundos.'
+    const b64 = req.body && req.body.db_base64;
+    if (!b64 || typeof b64 !== 'string') throw new restoreLib.RestoreError('Archivo de respaldo requerido.');
+    __dropRestoreStaged();
+    staged = await restoreLib.stageUpload({
+      buffer: Buffer.from(b64, 'base64'), stagingDir: RESTORE_PATHS.stagingDir, liveDb: db, by: req.user.nombre,
     });
-
-    // Salir limpiamente para que pm2 lo reinicie con la nueva BD
-    setTimeout(() => {
-      console.log('[BACKUP] Restauración completa. Reiniciando para releer BD...');
-      process.exit(0);
-    }, 2000);
+    const { schema, keys } = await restoreLib.dryRunBoot({
+      stagedPath: staged.stagedPath, serverScript: __filename, stagingDir: RESTORE_PATHS.stagingDir, restoreId: staged.restoreId,
+    });
+    const diff = restoreLib.compareSchema(schema, restoreLib.schemaOf(db), keys, restoreLib.keysOf(db));
+    if (!diff.ok) {
+      throw new restoreLib.RestoreError('Al respaldo le faltan partes de la base actual (probablemente es anterior a algunos módulos o fue editado): restaurarlo dejaría pantallas sin funcionar.', 422,
+        { missing: { tablas: diff.missingTables, columnas: diff.missingColumns, llaves: diff.missingKeys } });
+    }
+    const actual = restoreLib.statsOf(db);
+    restoreStaged = {
+      stagingId: nodeCrypto.randomUUID(), restoreId: staged.restoreId, stagedPath: staged.stagedPath,
+      epoch: staged.epoch, stats: staged.stats, userId: req.user.id, expiresAt: Date.now() + RESTORE_STAGED_TTL_MS,
+    };
+    staged = null; // ahora lo custodia restoreStaged
+    audit(req, 'RESTORE_FULL_INSPECT', 'backup', restoreStaged.restoreId, JSON.stringify({ respaldo: restoreStaged.stats, actual }));
+    res.json({
+      ok: true, staging_id: restoreStaged.stagingId, expires_in: RESTORE_STAGED_TTL_MS / 1000,
+      respaldo: restoreStaged.stats, actual, conserva: restoreLib.PRESERVED_TABLES,
+    });
   } catch (e) {
-    console.error('[BACKUP] Error en restore-full:', e);
-    res.status(500).json({ error: e.message });
+    if (staged) restoreLib.removeWithSidecars(staged.stagedPath);
+    __restoreError(res, e);
+  } finally {
+    __releaseRestoreLock(lock);
   }
 });
 
-// POST /api/backup/restore-table/:name — restaurar 1 tabla desde JSON
-// Body: { confirmation_token: "RESTAURAR-TABLA", mode: "replace"|"merge", rows: [...] }
+// POST /api/backup/restore-full — Body: { staging_id, confirmation_token: 'RESTAURAR', password }
+app.post('/api/backup/restore-full', auth, __requireAdminBackup, async (req, res) => {
+  const lock = __takeRestoreLock(res);
+  if (!lock) return;
+  try {
+    const { staging_id, confirmation_token, password } = req.body || {};
+    if (confirmation_token !== 'RESTAURAR') throw new restoreLib.RestoreError('Token de confirmación inválido. Debes escribir RESTAURAR exactamente.');
+    if (!password) throw new restoreLib.RestoreError('Contraseña requerida.');
+    const st = restoreStaged;
+    if (!st || !staging_id || st.stagingId !== staging_id) throw new restoreLib.RestoreError('El respaldo analizado ya no está disponible; vuelve a analizarlo.', 410);
+    if (st.expiresAt < Date.now()) { __dropRestoreStaged(); throw new restoreLib.RestoreError('El análisis del respaldo caducó; vuelve a analizarlo.', 410); }
+    if (st.userId !== req.user.id) throw new restoreLib.RestoreError('El respaldo lo analizó otro usuario; vuelve a analizarlo.', 409);
+
+    const u = db.prepare("SELECT password FROM users WHERE id = ? AND activo = 1 AND rol = 'admin'").get(req.user.id);
+    if (!u || !bcrypt.compareSync(password, u.password || '')) {
+      audit(req, 'RESTORE_PASSWORD_FAIL', 'backup', st.restoreId, 'Intento de restauración con contraseña incorrecta');
+      throw new restoreLib.RestoreError('Contraseña incorrecta.', 403);
+    }
+
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const safetyPath = __backupPath.join(__backupAutoDir, `kbotanas-PRE-RESTORE-${ts}.db`);
+    // Antes del respaldo de seguridad: así esta entrada viaja a la BD restaurada (audit_log se conserva)
+    audit(req, 'RESTORE_FULL_INIT', 'backup', st.restoreId,
+      JSON.stringify({ respaldo: st.stats, safety: __backupPath.basename(safetyPath) }));
+
+    restoreApplying = true;
+    await restoreLib.applyRestore({
+      db, dbFile: DB_FILE, stagedPath: st.stagedPath, expectedEpoch: st.epoch, safetyPath,
+      markerPath: RESTORE_PATHS.markerPath, restoreId: st.restoreId,
+      by: { id: req.user.id, nombre: req.user.nombre, rol: req.user.rol },
+    });
+    restoreStaged = null;
+    res.json({
+      ok: true, safety_backup: __backupPath.basename(safetyPath),
+      message: 'Restauración aplicada. El servidor se reinicia en unos segundos.',
+    });
+    console.log('[restore] aplicada; reiniciando para abrir la BD restaurada');
+    setTimeout(() => process.exit(0), 300);
+  } catch (e) {
+    if (e && e.mustExit) {
+      // La conexión ya se cerró: hay que reiniciar para reabrir la BD (la original si no hubo rename)
+      console.error('[restore] error con la BD ya cerrada; reiniciando:', e);
+      const msg = (e instanceof restoreLib.RestoreError ? e.message : 'Error al aplicar la restauración: ' + e.message) +
+        (e.renamed ? '' : ' La base de datos no cambió.') + ' El servidor se reinicia.';
+      res.status(e.status && e.status < 500 ? e.status : 500).json({ error: msg });
+      setTimeout(() => process.exit(e.renamed ? 0 : 1), 300);
+      return;
+    }
+    restoreApplying = false;
+    __restoreError(res, e);
+  } finally {
+    if (!restoreApplying) __releaseRestoreLock(lock);
+  }
+});
+
+// GET /api/backup/restore-status — resultado de la última restauración (lo escribe el arranque)
+app.get('/api/backup/restore-status', auth, __requireAdminBackup, (req, res) => {
+  res.json(restoreLib.restoreStatus(DB_FILE));
+});
+
+// POST /api/backup/restore-table/:name — DESHABILITADA: reemplazaba filas sin cambiar el epoch
+// de datos (los dispositivos quedarían con copias locales inconsistentes) y podía borrar
+// app_settings.db_epoch. La interfaz no la usa; para restaurar se usa restore-full.
 app.post('/api/backup/restore-table/:name', auth, __requireAdminBackup, (req, res) => {
-  const tx = db.transaction((tableName, body) => {
-    if (body.confirmation_token !== 'RESTAURAR-TABLA') {
-      throw new Error('Token de confirmación inválido (esperado: RESTAURAR-TABLA)');
-    }
-    const allTables = __listAllTables();
-    if (!allTables.includes(tableName)) throw new Error('tabla no existe');
-    if (tableName === 'users') throw new Error('Por seguridad, la tabla users no se puede restaurar por este método. Usa restauración completa.');
-    if (tableName === 'audit_log') throw new Error('audit_log es inmutable, no se puede sobrescribir.');
-
-    const rows = Array.isArray(body.rows) ? body.rows : [];
-    const mode = body.mode === 'replace' ? 'replace' : 'merge';
-    const cols = db.prepare(`PRAGMA table_info("${tableName}")`).all().map(c => c.name);
-    if (cols.length === 0) throw new Error('tabla sin columnas');
-
-    // Validar que las filas tengan al menos las columnas críticas
-    let inserted = 0, replaced = 0, skipped = 0;
-
-    if (mode === 'replace') {
-      // Soft replace: marcar deleted=1 todos los actuales (si tiene columna deleted), o DELETE
-      if (cols.includes('deleted')) {
-        db.prepare(`UPDATE "${tableName}" SET deleted = 1`).run();
-      } else {
-        db.prepare(`DELETE FROM "${tableName}"`).run();
-      }
-    }
-
-    // Filtrar columnas válidas en cada fila y construir INSERT OR REPLACE
-    const placeholders = cols.map(() => '?').join(',');
-    const stmt = db.prepare(`INSERT OR REPLACE INTO "${tableName}" (${cols.map(c => `"${c}"`).join(',')}) VALUES (${placeholders})`);
-
-    for (const row of rows) {
-      const values = cols.map(c => row[c] !== undefined ? row[c] : null);
-      try {
-        stmt.run(...values);
-        inserted++;
-      } catch (e) { skipped++; }
-    }
-
-    audit(req, 'RESTORE_TABLE', 'backup', tableName,
-      `Modo: ${mode} · Insertados/reemplazados: ${inserted} · Saltados: ${skipped}`);
-
-    return { ok: true, inserted, skipped, mode };
-  });
-
-  try { res.json(tx(req.params.name, req.body || {})); }
-  catch (e) { res.status(400).json({ error: e.message }); }
+  res.status(503).json({ error: 'La restauración por tabla está deshabilitada. Usa la restauración completa.' });
 });
 
 // === FIN RUTAS DE BACKUP ===
@@ -2343,6 +2417,9 @@ app.get('/api/settings/:key', auth, (req, res) => {
 app.put('/api/settings/:key', auth, requireRole(['admin', 'gerente']), (req, res) => {
   const key = req.params.key;
   if (!key) return res.status(400).json({ error: 'key requerida' });
+  // db_epoch/db_epoch_at solo los escribe una restauración (lib/restore.js): cambiarlos a mano
+  // mandaría a todos los dispositivos a reconstruir su copia o desactivaría la protección.
+  if (/^db_epoch/i.test(key)) return res.status(403).json({ error: 'Clave reservada del sistema' });
   let value = req.body && Object.prototype.hasOwnProperty.call(req.body, 'value') ? req.body.value : req.body;
   const valueStr = typeof value === 'string' ? value : JSON.stringify(value);
   const now = Date.now();
@@ -2359,7 +2436,19 @@ app.use((err, req, res, next) => {
   res.status(err.statusCode || 500).json({ error: err.message || 'Error interno' });
 });
 
+// Arranque en seco (prueba de una restauración, lib/restore.js dryRunBoot): migraciones y
+// mounts ya corrieron sobre la copia; se cierra la BD y se sale sin abrir el puerto.
+if (process.env.KBOT_MIGRATE_ONLY === '1') {
+  db.close();
+  console.log(restoreLib.MIGRATE_ONLY_OK);
+  process.exit(0);
+}
+
 app.listen(PORT, () => {
   console.log(`🌶️  K-BOTANAS API corriendo en http://localhost:${PORT}`);
   console.log(`   Base de datos: ${DB_FILE}`);
+  // Si este arranque viene de una restauración: registrar el resultado y retirar el marker
+  restoreLib.finishBoot({ db, dbFile: DB_FILE });
+  process.removeListener('SIGINT', onBootSignal);
+  process.removeListener('SIGTERM', onBootSignal);
 });

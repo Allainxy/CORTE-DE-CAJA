@@ -100,6 +100,8 @@ Captura (id='m'+Date.now()+rand) → IndexedDB → cola localStorage (kbot_queue
 
 > Progreso 2026-09-26 (v1.17.0): chequeo estático de las 492 sentencias SQL contra el esquema de prod → corregidas todas las rotas (órdenes cerrar/pagar con CxP, Inteligencia top proveedores / antigüedad CxP, sembrado de categorías). Sincronía órdenes↔CxP. **Respaldos consistentes con WAL** (full-db, auto-run, deploy.sh usan la API de backup). ⚠️ **Pendiente nuevo:** `POST /api/backup/restore-full` quedó deshabilitado (503): sobrescribía el `.db` con la BD abierta en WAL (riesgo de corrupción). Rehacer: `db.backup()` de seguridad → `integrity_check` del archivo subido → `db.close()` → borrar `-wal/-shm` → copiar → reiniciar.
 
+> Progreso 2026-09-26 (v1.18.0): ✅ **Restaurar BD completa rehecha de forma segura** (analizar → confirmar, rename atómico, arranque en seco, rollback automático, epoch de datos para los dispositivos, lista de "cambios en revisión", CLI `restore-db.js`). Ver `docs/RESTAURAR-BD.md`. Suite 66/66.
+
 **Fase 1 — Correctitud de datos (lo más importante):**
 1. 🔄 Migrar dinero a **enteros-centavos**. *(diseño listo — alto riesgo, pendiente sign-off + ventana)*
 2. ✅ IDs cliente+server a **`crypto.randomUUID()`** (helper `newId`, anti-colisión). *Nota: se preservaron a propósito 2 ids con dependencia de formato (id de movimiento `'m'+timestamp` y folio de orden `'ord-'`); el id de movimiento offline conviene resolverlo seteando `created_at` en cliente (follow-up).*

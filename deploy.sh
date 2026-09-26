@@ -28,6 +28,10 @@ PM2_NAME="corte-kbomx"
 API_PORT="3401"
 TS=$(date +%F-%H%M)
 
+# ─── Modo --sync-only (rollback de código): sin git ni respaldo; solo frontend + reload + health
+SYNC_ONLY=0
+if [ "${1:-}" = "--sync-only" ]; then SYNC_ONLY=1; fi
+
 # ─── Localizar BD (puede estar en $DATA_DIR o en otro lado) ─────────────────
 DB_FILE="$DATA_DIR/kbotanas.db"
 if [ ! -f "$DB_FILE" ]; then
@@ -51,6 +55,13 @@ echo "  K-BOTANAS · corte-kbomx · Deploy · $(date '+%F %H:%M:%S')"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
 
+if [ "$SYNC_ONLY" = "1" ]; then
+BEFORE=$(git rev-parse --short HEAD)
+AFTER="$BEFORE"
+BACKUP_FILE=""
+echo "[1-3/6] --sync-only: sin verificación, respaldo ni pull (código actual: $BEFORE)"
+echo ""
+else
 # ─── [1/6] Working tree limpio (solo permitir backups/ untracked) ───────────
 echo "[1/6] Verificando working tree..."
 DIRTY=$(git status --porcelain | grep -vE "^\?\? (backups/|data/)" || true)
@@ -112,6 +123,7 @@ else
   git log --oneline "$BEFORE..$AFTER" | sed 's/^/      /'
 fi
 echo ""
+fi # fin de los pasos 1-3 (omitidos con --sync-only)
 
 # ─── [4/6] Sync frontend a nginx ────────────────────────────────────────────
 echo "[4/6] Sincronizando frontend a $FRONTEND_DEST..."
@@ -179,13 +191,18 @@ echo "════════════════════════�
 echo "  ✅ Deploy completo · commit $AFTER"
 echo "═══════════════════════════════════════════════════════════════"
 echo ""
+if [ "$SYNC_ONLY" = "0" ] && [ "$BEFORE" != "$AFTER" ]; then
 echo "ROLLBACK (si algo se rompió en producción):"
-echo "  cd $REPO_DIR && git reset --hard $BEFORE"
 if [ -n "$BACKUP_FILE" ]; then
-  # Restaurar la BD con el proceso DETENIDO y sin el -wal viejo: si no, SQLite
-  # reaplica ese WAL encima del respaldo y lo corrompe.
-  echo "  pm2 stop $PM2_NAME && rm -f $DB_FILE-wal $DB_FILE-shm && cp $BACKUP_FILE $DB_FILE && pm2 start $PM2_NAME"
-else
-  echo "  pm2 reload $PM2_NAME"
+  # BD solo si hay que volver a los datos de antes del deploy. Nunca con cp: con el
+  # proceso vivo o un -wal/-journal viejo al lado, SQLite los reaplica y corrompe.
+  # restore-db.js valida, respalda, conserva usuarios/bitácora y cambia el epoch.
+  # Con ';' el servidor vuelve a arrancar aunque la restauración se niegue (la BD no cambia).
+  echo "  1) BD, solo si hace falta volver a los datos de antes del deploy (con el código actual):"
+  echo "     pm2 stop $PM2_NAME; node $REPO_DIR/backend/scripts/restore-db.js --db $DB_FILE --from $BACKUP_FILE --yes; pm2 start $PM2_NAME"
 fi
+# El deploy.sh de $BEFORE puede no tener --sync-only: se usa una copia del actual.
+echo "  2) Código + frontend:"
+echo "     cp $REPO_DIR/deploy.sh /tmp/deploy-$AFTER.sh && cd $REPO_DIR && git reset --hard $BEFORE && bash /tmp/deploy-$AFTER.sh --sync-only"
 echo ""
+fi
